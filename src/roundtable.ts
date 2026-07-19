@@ -1464,12 +1464,8 @@ function buildAgentPrompt(
   lines.push(`Your role: ${agent} · Round ${state.currentRound + 1}/${state.totalRounds}`)
   lines.push("")
 
-  // User interjections (SPEC 7.4) — stored in plugin state, not visible in S2
-  if (state.userInterjections.length > 0) {
-    lines.push("── User messages ──")
-    for (const text of state.userInterjections) lines.push(text)
-    lines.push("")
-  }
+  // User interjections are visible in S2 directly — no need to re-inject
+  // (SPEC 7.4: user messages become part of the session context)
 
   const isLastAgent = state.currentAgentIndex === state.agents.length - 1
   const isLastRound = state.currentRound === state.totalRounds - 1
