@@ -608,9 +608,13 @@ async function startNewRoundtable(
       },
     })
 
-    // 6. Return confirmation string
+    // 6. Return structured result
     const agentList = agents.join(" → ")
-    return `Roundtable started in session #${sessionID} (${agentList} · ${args.rounds} round(s))`
+    return {
+      title: `Roundtable: ${agentList} · ${args.rounds} round(s)`,
+      output: `Roundtable started in session #${sessionID} (${agentList} · ${args.rounds} round(s))`,
+      metadata: { sessionID, agents: agentList, status: "started" },
+    }
   } catch (err) {
     // Clean up state on failure
     states.delete(sessionID)
@@ -824,8 +828,12 @@ async function extendRoundtable(
       },
     })
 
-    // 12. Return confirmation
-    return `Roundtable #${sessionID} extended with ${args.rounds} additional round(s). Debate continues with ${args.rounds > 1 ? `${args.rounds} more rounds` : "1 more round"}.`
+    // 12. Return structured result
+    return {
+      title: `Roundtable extended: ${originalState.agents.join(" → ")} · +${args.rounds} round(s)`,
+      output: `Roundtable #${sessionID} extended with ${args.rounds} additional round(s). Debate continues.`,
+      metadata: { sessionID, agents: originalState.agents.join(" → "), status: "extended" },
+    }
   } catch (err) {
     // Clean up state on failure
     states.delete(sessionID)
@@ -1678,8 +1686,10 @@ function generateDefaultTitle(args: RoundtableArgs & { agents: string[] }): stri
  *   [/ROUNDTABLE META]
  */
 function serializeState(state: RoundtableState): string {
-  const json = JSON.stringify(state, null, 2)
-  return `[ROUNDTABLE META]\n${json}\n[/ROUNDTABLE META]`
+  // Compact single-line JSON to minimize session visual noise.
+  // This message is internal — it survives restarts and enables extend mode.
+  const json = JSON.stringify(state)
+  return `[ROUNDTABLE META] ${json} [/ROUNDTABLE META]`
 }
 
 /**
