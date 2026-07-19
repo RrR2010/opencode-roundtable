@@ -274,6 +274,11 @@ const states = new Map<string, RoundtableState>()
 /** Map<S2 session ID → setTimeout handle> for agent timeout management */
 const timeoutHandles = new Map<string, ReturnType<typeof setTimeout>>()
 
+/** Map<S2 session ID → pending promise resolvers for tool.execute awaiting debate completion */
+const pendingResults = new Map<string, {
+  resolve: (output: string) => void
+}>()
+
 // ============================================================
 // Plugin
 // ============================================================
@@ -402,13 +407,22 @@ export const RoundtablePlugin: Plugin = async (ctx) => {
                 if (rounds > config.maxRounds) {
                   return `Error: Maximum ${config.maxRounds} rounds allowed (requested: ${rounds})`
                 }
-                return startNewRoundtable(ctx, { ...args, rounds, mode } as RoundtableArgs, toolCtx)
+                const sessionID = await startNewRoundtable(ctx, { ...args, rounds, mode } as RoundtableArgs, toolCtx)
+                // Await debate completion — this keeps the tool "loading" until the debate finishes
+                const result = await new Promise<string>((resolve) => {
+                  pendingResults.set(sessionID, { resolve })
+                })
+                return result
               }
               case "extend": {
                 if (!args.sessionID) {
                   return "Error: sessionID is required when mode is 'extend'"
                 }
-                return extendRoundtable(ctx, { ...args, rounds, mode } as RoundtableArgs, toolCtx)
+                const sessionID = await extendRoundtable(ctx, { ...args, rounds, mode } as RoundtableArgs, toolCtx)
+                const result = await new Promise<string>((resolve) => {
+                  pendingResults.set(sessionID, { resolve })
+                })
+                return result
               }
             }
           } catch (err) {
@@ -608,13 +622,8 @@ async function startNewRoundtable(
       },
     })
 
-    // 6. Return structured result
-    const agentList = agents.join(" → ")
-    return {
-      title: `Roundtable: ${agentList} · ${args.rounds} round(s)`,
-      output: `Roundtable started in session #${sessionID} (${agentList} · ${args.rounds} round(s))`,
-      metadata: { sessionID, agents: agentList, status: "started" },
-    }
+    // 6. Return sessionID so the tool execute can await completion
+    return sessionID
   } catch (err) {
     // Clean up state on failure
     states.delete(sessionID)
@@ -828,12 +837,8 @@ async function extendRoundtable(
       },
     })
 
-    // 12. Return structured result
-    return {
-      title: `Roundtable extended: ${originalState.agents.join(" → ")} · +${args.rounds} round(s)`,
-      output: `Roundtable #${sessionID} extended with ${args.rounds} additional round(s). Debate continues.`,
-      metadata: { sessionID, agents: originalState.agents.join(" → "), status: "extended" },
-    }
+    // 12. Return sessionID so the tool execute can await completion
+    return sessionID
   } catch (err) {
     // Clean up state on failure
     states.delete(sessionID)
@@ -1160,7 +1165,6 @@ async function finalizeRoundtable(
   state: RoundtableState,
 ): Promise<void> {
   const sessionID = state.sessionID
-  const parentSessionID = state.parentSessionID
 
   // Clear any pending timeout (defensive — normally already cleared by idle handler)
   const timeoutHandle = timeoutHandles.get(sessionID)
@@ -1173,14 +1177,13 @@ async function finalizeRoundtable(
     // 1. Build consolidated summary from history
     const summary = buildConsolidatedSummary(state)
 
-    // 2. Inject final result into S1 as a noReply message
-    await ctx.client.session.prompt({
-      path: { id: parentSessionID },
-      body: {
-        noReply: true,
-        parts: [{ type: "text", text: summary }],
-      },
-    })
+    // 2. Resolve the pending tool.execute promise — this returns the result
+    //    to the orchestrator agent that called roundtable()
+    const pending = pendingResults.get(sessionID)
+    if (pending) {
+      pending.resolve(summary)
+      pendingResults.delete(sessionID)
+    }
 
     // 3. Inject delimiter in S2
     await injectRoundtableDelimiter(ctx, sessionID)
@@ -1388,25 +1391,24 @@ async function handleSessionDeleted(
   }
 
   if (deletedSessionID === state.sessionID) {
-    // ── S2 was deleted → inject partial result into S1 ──
+    // ── S2 was deleted → resolve pending promise with partial result ──
     state.phase = "aborted"
 
     const partialSummary = buildConsolidatedSummary(state)
-    const lines = [
+    const output = [
       "[Roundtable interrupted — session closed]",
       "Partial history up to interruption:",
       "",
       partialSummary,
-    ]
+    ].join("\n")
+
+    const pending = pendingResults.get(state.sessionID)
+    if (pending) {
+      pending.resolve(output)
+      pendingResults.delete(state.sessionID)
+    }
 
     try {
-      await ctx.client.session.prompt({
-        path: { id: state.parentSessionID },
-        body: {
-          noReply: true,
-          parts: [{ type: "text", text: lines.join("\n") }],
-        },
-      })
       await ctx.client.tui.showToast({
         body: {
           message: "Roundtable interrupted",
@@ -1414,14 +1416,14 @@ async function handleSessionDeleted(
         },
       })
     } catch {
-      // Parent session may also be gone
+      // Best-effort
     }
     try {
       await ctx.client.app.log({
         body: {
           service: "roundtable",
           level: "debug",
-          message: `S2 deleted — partial result injected into S1`,
+          message: `S2 deleted — pending promise resolved with partial result`,
           extra: { sessionID: deletedSessionID, parentSessionID: state.parentSessionID },
         },
       })
@@ -1496,26 +1498,16 @@ function buildObserverPrompt(
   state: RoundtableState,
   observer: "built-in" | string,
 ): string {
-  const historyText = state.history
-    .map(
-      (entry) =>
-        `── ${entry.agent} (Round ${entry.round + 1}) ──\n${entry.response}` +
-        (entry.toolCalls.length > 0
-          ? `\nTools: ${entry.toolCalls.map((t) => `${t.toolName} → ${t.outputPreview.slice(0, 100)}`).join("; ")}`
-          : ""),
-    )
-    .join("\n\n")
-
   const observerPrompt = config.defaultObserverPrompt
 
   if (observer === "built-in") {
-    return `${observerPrompt}\n\nDebate:\n${historyText}`
+    return observerPrompt
   }
 
   return (
     `You are an impartial roundtable observer.\n` +
     `Your role: ${observer}. Provide an executive summary of the debate.\n\n` +
-    `${observerPrompt}\n\nDebate:\n${historyText}`
+    observerPrompt
   )
 }
 
