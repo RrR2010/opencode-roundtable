@@ -114,13 +114,12 @@ including only what matters.
 
 ```typescript
 roundtable({
-  agents: string[],             // Agent names in speaking order (min 2)
+  agents?: string[],            // Agent names in speaking order (min 2). Required for new debates.
   prompt: string,               // Topic/challenge to debate
   rounds?: number,              // Number of complete rounds (default: 1)
   observer?: string,            // Agent that consolidates the summary (optional — default: plugin built-in)
-  mode?: "new" | "extend",      // Operation mode (default: "new")
-  sessionID?: string,           // Session to extend (only for mode:"extend")
-  title?: string,               // Custom title for S2 (default: "Roundtable: A vs B · N round(s)")
+  sessionID?: string,           // S2 session ID to extend a previous roundtable. Omit to start a fresh debate.
+  title?: string,               // Custom title for the session (default: "Roundtable: A vs B · N round(s)")
 })
 ```
 
@@ -128,13 +127,12 @@ roundtable({
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `agents` | `string[]` | Yes | — | Agent names in speaking order (min 2). Validated against `ctx.client.app.agents()` |
+| `agents` | `string[]` | No* | — | Agent names in speaking order (min 2). Required for new debates; omit when extending |
 | `prompt` | `string` | Yes | — | Topic/challenge to debate |
 | `rounds` | `number` | No | `1` | Number of complete rounds |
 | `observer` | `string` | No | `built-in` | Agent name for final consolidation. If omitted, uses the plugin's built-in observer |
-| `mode` | `"new" \| "extend"` | No | `"new"` | Operation mode |
-| `sessionID` | `string` | No* | — | S2 session ID to extend (required if `mode: "extend"`) |
-| `title` | `string` | No | `"Roundtable: {agents} · {rounds} round(s)"` | Custom title for the child session |
+| `sessionID` | `string` | No* | — | S2 session ID to extend a previous roundtable. Omit (and pass `agents`) to start a new debate |
+| `title` | `string` | No | `"Roundtable: {agents} · {rounds} round(s)"` | Custom title for the session |
 
 ### Available agents tool
 
@@ -153,12 +151,9 @@ Available agents: pm, dev, rv, plan, build
 This helps the orchestrator (e.g., `build`) know which names to pass in
 `agents` when calling `roundtable()`.
 
-### Modes
-
-| Mode | Description |
-|------|-------------|
-| `new` | Creates a new S2 session and starts the debate |
-| `extend` | Continues a concluded roundtable (requires `sessionID`) |
+The tool infers the operation mode from the presence of `sessionID`:
+- **No `sessionID`** → starts a fresh debate (requires `agents`)
+- **`sessionID` present** → continues a concluded roundtable (uses stored agent config)
 
 ### Usage examples
 
@@ -184,9 +179,8 @@ roundtable({
   title: "Debate: ORM vs Raw SQL",
 })
 
-// Extending a previous roundtable
+// Extending a previous roundtable (no agents — uses original config)
 roundtable({
-  mode: "extend",
   sessionID: "abc123",
   rounds: 2,
   prompt: "Dive deeper into operational costs",
@@ -213,7 +207,7 @@ The response also includes the list of available agents if any name is invalid
 
 ## 4. Lifecycle
 
-### Full flow (mode: "new")
+### Full flow (fresh debate)
 
 ```
 PHASE 1 — INITIALIZATION
@@ -258,10 +252,10 @@ PHASE 4 — FINALIZATION
   20. Plugin clears in-memory state for S2
 ```
 
-### Flow (mode: "extend")
+### Flow (extend)
 
 ```
-  1. Orchestrator calls roundtable({mode:"extend", sessionID, rounds, prompt})
+  1. Orchestrator calls roundtable({sessionID, rounds, prompt})
   2. Plugin fetches serialized state from S2 (from the noReply tag)
   3. Plugin restores history + config of the original roundtable
   4. Adds new rounds to totalRounds (accumulative)
@@ -615,7 +609,6 @@ If the orchestrator passes `observer: "rv"`, the plugin:
 
 ```typescript
 roundtable({
-  mode: "extend",
   sessionID: "abc123",         // Original S2 ID
   rounds: 2,
   prompt: "Dive deeper into operational costs",  // new prompt
@@ -783,7 +776,7 @@ export const RoundtablePlugin: Plugin = async (ctx) => {
           prompt: tool.schema.string(),
           rounds: tool.schema.number().min(1).default(1),
           observer: tool.schema.string().optional(),
-          mode: tool.schema.enum(["new", "extend"]).default("new"),
+          sessionID: tool.schema.string().optional(),
           sessionID: tool.schema.string().optional(),
           title: tool.schema.string().optional(),
         },

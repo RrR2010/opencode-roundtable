@@ -385,7 +385,12 @@ export const RoundtablePlugin: Plugin = async (ctx) => {
             const rounds = args.rounds ?? 1
 
             if (args.sessionID) {
-              // Continue a previous roundtable
+              if (!args.sessionID.trim()) {
+                return "Error: sessionID is empty"
+              }
+              if (args.agents) {
+                return "Error: pass either sessionID (extend) or agents (new), not both"
+              }
               const sessionID = await extendRoundtable(ctx, { ...args, rounds } as RoundtableArgs, toolCtx)
               const result = await new Promise<string>((resolve) => {
                 pendingResults.set(sessionID, { resolve })
