@@ -665,7 +665,7 @@ The plugin infers intent heuristically: if the prompt starts with
 | Agent colors | Native OpenCode via `agent.color` in config |
 | Navigation | S2 is a child of S1 → `<Leader>+Right/Left` to switch |
 | Toast | Plugin shows toast on start, completion, and errors |
-| S2 title | Default: `"Roundtable: {agents.join(' vs ')} · {rounds} round(s)"`. Updates during debate: `"Roundtable: PM vs DEV (R2/3)"`. On conclusion: `"Roundtable: PM vs DEV · CONCLUDED"` |
+| S2 title | Default: `"(Roundtable) - {prompt[:57]}..."`. Stays stable during debate. On conclusion: appends ` · CONCLUDED` |
 | Message names | Each response is tagged with the speaking agent's name |
 
 ### TUI appearance example

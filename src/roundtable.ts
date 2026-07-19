@@ -1073,9 +1073,8 @@ async function updateSessionTitle(
   ctx: PluginInput,
   state: RoundtableState,
 ): Promise<void> {
-  const agentList = state.agents.join(" vs ")
-  const roundInfo = `R${state.currentRound + 1}/${state.totalRounds}`
-  const title = `Roundtable: ${agentList} (${roundInfo})`
+  const summary = state.prompt.length > 60 ? state.prompt.slice(0, 57) + "..." : state.prompt
+  const title = `(Roundtable) - ${summary}`
   await ctx.client.session.update({
     path: { id: state.sessionID },
     body: { title },
@@ -1172,10 +1171,10 @@ async function finalizeRoundtable(
     await injectRoundtableDelimiter(ctx, sessionID)
 
     // 4. Update S2 title to CONCLUDED
-    const agentList = state.agents.join(" vs ")
+    const summary = state.prompt.length > 50 ? state.prompt.slice(0, 47) + "..." : state.prompt
     await ctx.client.session.update({
       path: { id: sessionID },
-      body: { title: `Roundtable: ${agentList} · CONCLUDED` },
+      body: { title: `(Roundtable) - ${summary} · CONCLUDED` },
     })
 
     // 5. Show toast
@@ -1648,9 +1647,9 @@ async function scanOrphanRoundtables(
  * Format: "Roundtable: A vs B vs C · N round(s)"
  */
 function generateDefaultTitle(args: RoundtableArgs & { agents: string[] }): string {
-  const agentList = args.agents.join(" vs ")
-  const roundLabel = args.rounds === 1 ? "1 round" : `${args.rounds} rounds`
-  return args.title ?? `Roundtable: ${agentList} · ${roundLabel}`
+  if (args.title) return args.title
+  const summary = args.prompt.length > 60 ? args.prompt.slice(0, 57) + "..." : args.prompt
+  return `(Roundtable) - ${summary}`
 }
 
 /**
