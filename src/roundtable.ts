@@ -355,9 +355,10 @@ export const RoundtablePlugin: Plugin = async (ctx) => {
           "Choosing agents: select agents based on their expertise (e.g., pm for product decisions, " +
           "dev for technical trade-offs, rv for code review). You can also specify in the prompt " +
           "what each agent should focus on (e.g., 'pm: focus on cost; dev: focus on maintainability').\n\n" +
-          "Multiple rounds: for complex topics, use 2+ rounds and have each round focus on a " +
-          "different aspect (e.g., round 1: pros, round 2: cons, round 3: implementation plan). " +
-          "The default is 1 round.",
+          "Multiple rounds: for complex topics, use 2+ rounds and INCLUDE per-round focus " +
+          "instructions IN the prompt itself (e.g., prompt: 'Round 1: list pros. Round 2: " +
+          "list cons. Round 3: propose an implementation plan'). This way all agents see " +
+          "the full agenda. The default is 1 round.",
 
         args: {
           agents: tool.schema
@@ -370,16 +371,17 @@ export const RoundtablePlugin: Plugin = async (ctx) => {
           prompt: tool.schema
             .string()
             .describe(
-              "Topic or challenge for the agents to debate. For complex topics, consider " +
-              "adding per-agent focus areas (e.g., 'pm: evaluate cost; dev: evaluate complexity').",
+              "Topic or challenge for the agents to debate. For multi-round debates, " +
+              "include per-round instructions here (e.g., 'Round 1: pros. Round 2: cons. " +
+              "Round 3: plan.'). All agents will see this and follow the round structure.",
             ),
           rounds: tool.schema
             .number()
             .min(1)
             .describe(
-              "Number of complete rounds where each round = all agents speak once. " +
-              "Default: 1. For complex topics, use 2+ rounds and focus each round on " +
-              "different aspect (pros, cons, risks, plan, etc.)",
+              "Number of complete rounds (each round = all agents speak once). " +
+              "Default: 1. For complex topics with 2+ rounds, include per-round focus " +
+              "instructions in the prompt parameter so all agents see the agenda.",
             ),
           observer: tool.schema
             .string()
