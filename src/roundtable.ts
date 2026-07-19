@@ -119,8 +119,22 @@ const timeoutHandles = new Map<string, ReturnType<typeof setTimeout>>()
 // ============================================================
 
 export const RoundtablePlugin: Plugin = async (ctx) => {
-  // Phase 1: log-only initialization
-  await scanOrphanRoundtables(ctx)
+  // Phase 1: log-only initialization (best-effort — must not crash the plugin)
+  try {
+    await scanOrphanRoundtables(ctx)
+  } catch (err) {
+    try {
+      await ctx.client.app.log({
+        body: {
+          service: "roundtable",
+          level: "error",
+          message: `scanOrphanRoundtables failed: ${err instanceof Error ? err.message : String(err)}`,
+        },
+      })
+    } catch {
+      // Best-effort logging
+    }
+  }
 
   return {
     event: async ({ event }) => {
@@ -351,6 +365,9 @@ async function startNewRoundtable(
   args: RoundtableArgs,
   toolCtx: ToolContext,
 ): Promise<string> {
+  // agents is guaranteed by the execute() validation for mode:"new"
+  const agents = args.agents!
+
   // 1. Create S2 as a child of the calling session (S1)
   const newSession = await ctx.client.session.create({
     body: {
@@ -361,9 +378,6 @@ async function startNewRoundtable(
 
   const sessionID = newSession.data.id
   const parentSessionID = toolCtx.sessionID
-
-  // agents is guaranteed by the execute() validation for mode:"new"
-  const agents = args.agents!
 
   // 2. Initialise in-memory state
   const state: RoundtableState = {
@@ -817,6 +831,13 @@ async function finalizeRoundtable(
   const sessionID = state.sessionID
   const parentSessionID = state.parentSessionID
 
+  // Clear any pending timeout (defensive — normally already cleared by idle handler)
+  const timeoutHandle = timeoutHandles.get(sessionID)
+  if (timeoutHandle) {
+    clearTimeout(timeoutHandle)
+    timeoutHandles.delete(sessionID)
+  }
+
   try {
     // 1. Build consolidated summary from history
     const summary = buildConsolidatedSummary(state)
@@ -975,6 +996,13 @@ async function handleSessionDeleted(
   state: RoundtableState,
   deletedSessionID: string,
 ): Promise<void> {
+  // Clear any pending timeout for this session
+  const handle = timeoutHandles.get(state.sessionID)
+  if (handle) {
+    clearTimeout(handle)
+    timeoutHandles.delete(state.sessionID)
+  }
+
   if (deletedSessionID === state.sessionID) {
     // ── S2 was deleted → inject partial result into S1 ──
     state.phase = "aborted"
