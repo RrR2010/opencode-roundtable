@@ -65,7 +65,8 @@ type Phase = "active" | "observing" | "done" | "aborted"
 
 /** Inferred argument shape for the `roundtable` tool */
 interface RoundtableArgs {
-  agents: string[]
+  /** Agent names in speaking order. Required for mode:"new", stored from original for mode:"extend" */
+  agents?: string[]
   prompt: string
   rounds: number
   observer?: string
@@ -171,7 +172,8 @@ export const RoundtablePlugin: Plugin = async (ctx) => {
           agents: tool.schema
             .array(tool.schema.string())
             .min(2)
-            .describe("Agent names in speaking order (min 2)"),
+            .optional()
+            .describe("Agent names in speaking order (min 2). Required for mode:'new'; stored from original for mode:'extend'."),
           prompt: tool.schema.string().describe("Topic or challenge to debate"),
           rounds: tool.schema
             .number()
@@ -197,20 +199,23 @@ export const RoundtablePlugin: Plugin = async (ctx) => {
         },
 
         async execute(args, toolCtx) {
-          // Validate agents first
-          const validation = await validateAgents(ctx, args.agents)
-          if (!validation.valid) {
-            const available = validation.available.map((a) => a.name).join(", ")
-            return [
-              "Invalid agent configuration:",
-              ...validation.errors.map((e) => `  - ${e}`),
-              `Available agents: ${available}`,
-            ].join("\n")
-          }
-
           switch (args.mode) {
-            case "new":
+            case "new": {
+              // Agents are required for new roundtables
+              if (!args.agents || args.agents.length < 2) {
+                return "Error: 'agents' with at least 2 names is required when mode is 'new'"
+              }
+              const validation = await validateAgents(ctx, args.agents)
+              if (!validation.valid) {
+                const available = validation.available.map((a) => a.name).join(", ")
+                return [
+                  "Invalid agent configuration:",
+                  ...validation.errors.map((e) => `  - ${e}`),
+                  `Available agents: ${available}`,
+                ].join("\n")
+              }
               return startNewRoundtable(ctx, args as RoundtableArgs, toolCtx)
+            }
             case "extend": {
               if (!args.sessionID) {
                 return "Error: sessionID is required when mode is 'extend'"
@@ -350,18 +355,21 @@ async function startNewRoundtable(
   const newSession = await ctx.client.session.create({
     body: {
       parentID: toolCtx.sessionID,
-      title: generateDefaultTitle(args),
+      title: generateDefaultTitle({ ...args, agents }),
     },
   })
 
   const sessionID = newSession.data.id
   const parentSessionID = toolCtx.sessionID
 
+  // agents is guaranteed by the execute() validation for mode:"new"
+  const agents = args.agents!
+
   // 2. Initialise in-memory state
   const state: RoundtableState = {
     sessionID,
     parentSessionID,
-    agents: args.agents,
+    agents,
     totalRounds: args.rounds,
     observer: args.observer ?? "built-in",
     prompt: args.prompt,
@@ -389,31 +397,219 @@ async function startNewRoundtable(
   // 5. Toast to the user
   await ctx.client.tui.showToast({
     body: {
-      message: `Roundtable started in #${sessionID} (${args.agents.join(" → ")} · ${args.rounds} round(s))`,
+      message: `Roundtable started in #${sessionID} (${agents.join(" → ")} · ${args.rounds} round(s))`,
       variant: "info",
     },
   })
 
   // 6. Return confirmation string
-  const agentList = args.agents.join(" → ")
+  const agentList = agents.join(" → ")
   return `Roundtable started in child session #${sessionID} (${agentList} · ${args.rounds} round(s))`
 }
+
+// ============================================================
+// Extend Helpers
+// ============================================================
+
+/**
+ * Search through session messages for a text part containing
+ * the serialized [ROUNDTABLE META] state.
+ */
+function findSerializedState(
+  messages: Array<{ info: { role: string }; parts: Part[] }>,
+): string | null {
+  for (const msg of messages) {
+    if (msg.info.role !== "user") continue
+    for (const part of msg.parts) {
+      if (part.type === "text" && part.text.includes("[ROUNDTABLE META]")) {
+        return part.text
+      }
+    }
+  }
+  return null
+}
+
+/**
+ * Build the extended prompt string using the heuristic from SPEC §9.
+ *
+ * Continuation: prompt starts with known trigger words → append to original
+ * New topic: otherwise → original becomes context, new prompt is the challenge
+ */
+function buildExtendedPrompt(originalPrompt: string, extendPrompt: string): string {
+  const continuationTriggers = [
+    "debate more",
+    "continue",
+    "dive deeper",
+    "go deeper",
+    "expand on",
+    "elaborate",
+    "further discuss",
+    "keep debating",
+  ]
+
+  const lower = extendPrompt.toLowerCase().trim()
+  const isContinuation = continuationTriggers.some((trigger) => lower.startsWith(trigger))
+
+  if (isContinuation) {
+    return `Original topic: ${originalPrompt}\n\nContinuation: ${extendPrompt}`
+  }
+
+  // New topic — original becomes context
+  return [
+    `Previous discussion history preserved. Original topic was:`,
+    `  ${originalPrompt}`,
+    ``,
+    `New challenge: ${extendPrompt}`,
+  ].join("\n")
+}
+
+/**
+ * Compare two string arrays for shallow equality (same length, same elements in order).
+ */
+function arraysEqual(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false
+  }
+  return true
+}
+
+// ============================================================
+// Extend Mode
+// ============================================================
 
 /**
  * Continue a concluded roundtable with additional rounds.
  *
- * Phase 5: fetches S2 by sessionID, deserializes state from [ROUNDTABLE META],
- * restores config + history, and starts new rounds.
+ * Flow (SPEC §9):
+ *   1. Fetch S2 by sessionID
+ *   2. Read messages, find [ROUNDTABLE META] tag
+ *   3. Deserialize state
+ *   4. Validate phase was "done"
+ *   5. Create new state with preserved config + accumulated rounds
+ *   6. Build extended prompt (continuation vs new topic heuristic)
+ *   7. Re-serialize updated state into S2
+ *   8. Send to agents[0], continue normal PHASE 2 flow
  */
 async function extendRoundtable(
-  _ctx: PluginInput,
+  ctx: PluginInput,
   args: RoundtableArgs,
   _toolCtx: ToolContext,
 ): Promise<string> {
-  return [
-    `[Phase 5] Extend mode validated. Session: ${args.sessionID}, rounds: ${args.rounds}.`,
-    "Full extend flow with state deserialization will be implemented in Phase 5.",
-  ].join("\n")
+  const sessionID = args.sessionID!
+
+  // 1. Fetch S2 to verify it exists and is accessible
+  try {
+    await ctx.client.session.get({ path: { id: sessionID } })
+  } catch {
+    return `Error: Session #${sessionID} not found or inaccessible. Cannot extend.`
+  }
+
+  // 2. Read S2 messages
+  let messagesData
+  try {
+    messagesData = await ctx.client.session.messages({ path: { id: sessionID } })
+  } catch {
+    return `Error: Could not read messages from session #${sessionID}`
+  }
+
+  // 3. Find the [ROUNDTABLE META] tag in the messages
+  const serializedRaw = findSerializedState(messagesData.data)
+  if (!serializedRaw) {
+    return [
+      `Error: No roundtable state found in session #${sessionID}.`,
+      "This session is not a roundtable or the state was lost during compaction.",
+    ].join("\n")
+  }
+
+  // 4. Deserialize state
+  const originalState = deserializeState(serializedRaw)
+  if (!originalState) {
+    return `Error: Corrupt roundtable state in session #${sessionID}. Cannot extend.`
+  }
+
+  // 5. Validate phase was "done"
+  if (originalState.phase !== "done") {
+    return [
+      `Error: Roundtable #${sessionID} is still active (phase: ${originalState.phase}).`,
+      "Cannot extend until the roundtable concludes.",
+    ].join("\n")
+  }
+
+  // Validate agents match if provided
+  if (args.agents && !arraysEqual(args.agents, originalState.agents)) {
+    return [
+      "Error: Agent mismatch.",
+      `Original: ${originalState.agents.join(", ")}`,
+      `Provided: ${args.agents.join(", ")}`,
+      "Extend must use the same agents as the original roundtable.",
+    ].join("\n")
+  }
+
+  // Optionally re-validate stored agents still exist on the server
+  try {
+    const storedValidation = await validateAgents(ctx, originalState.agents)
+    if (!storedValidation.valid) {
+      return [
+        "Error: One or more agents from the original roundtable no longer exist.",
+        ...storedValidation.errors.map((e) => `  - ${e}`),
+      ].join("\n")
+    }
+  } catch {
+    return "Error: Failed to validate agents. Cannot extend."
+  }
+
+  // 6. Build extended prompt
+  const extendedPrompt = buildExtendedPrompt(originalState.prompt, args.prompt)
+
+  // 7. Create new state with preserved config + accumulated rounds
+  const newState: RoundtableState = {
+    sessionID: originalState.sessionID,
+    parentSessionID: originalState.parentSessionID,
+    agents: originalState.agents,
+    totalRounds: originalState.totalRounds + args.rounds,
+    observer: originalState.observer,
+    prompt: extendedPrompt,
+    currentRound: originalState.currentRound,
+    currentAgentIndex: 0,
+    phase: "active",
+    history: [...originalState.history],
+    errors: [...originalState.errors],
+    createdAt: Date.now(),
+  }
+  states.set(sessionID, newState)
+
+  // 8. Re-serialize updated state into S2 (replaces old meta)
+  await ctx.client.session.prompt({
+    path: { id: sessionID },
+    body: {
+      noReply: true,
+      parts: [{ type: "text", text: serializeState(newState) }],
+    },
+  })
+
+  // 9. Update S2 title to reflect extended rounds
+  const agentList = originalState.agents.join(" vs ")
+  await ctx.client.session.update({
+    path: { id: sessionID },
+    body: {
+      title: `Roundtable: ${agentList} (R${newState.currentRound + 1}/${newState.totalRounds})`,
+    },
+  })
+
+  // 10. Send extended prompt to agents[0]
+  await sendToAgent(ctx, newState)
+
+  // 11. Toast
+  await ctx.client.tui.showToast({
+    body: {
+      message: `Roundtable #${sessionID} extended — ${args.rounds} more round(s) (${originalState.agents.join(" → ")})`,
+      variant: "info",
+    },
+  })
+
+  // 12. Return confirmation
+  return `Roundtable #${sessionID} extended with ${args.rounds} additional round(s). Debate continues with ${args.rounds > 1 ? `${args.rounds} more rounds` : "1 more round"}.`
 }
 
 /**
@@ -1068,7 +1264,7 @@ async function scanOrphanRoundtables(
  *
  * Format: "Roundtable: A vs B vs C · N round(s)"
  */
-function generateDefaultTitle(args: RoundtableArgs): string {
+function generateDefaultTitle(args: RoundtableArgs & { agents: string[] }): string {
   const agentList = args.agents.join(" vs ")
   const roundLabel = args.rounds === 1 ? "1 round" : `${args.rounds} rounds`
   return args.title ?? `Roundtable: ${agentList} · ${roundLabel}`
@@ -1093,11 +1289,52 @@ function serializeState(state: RoundtableState): string {
 
 /**
  * Deserialize roundtable state from a tagged string.
- * Returns null if parsing fails.
+ *
+ * Parses the JSON payload between [ROUNDTABLE META] and [/ROUNDTABLE META]
+ * tags, validates required fields, and returns the state.
+ * Returns null if parsing or validation fails.
  */
-function deserializeState(
-  _raw: string,
-): RoundtableState | null {
-  // Phase 5: parse JSON between [ROUNDTABLE META] tags
-  return null // stub
+function deserializeState(raw: string): RoundtableState | null {
+  try {
+    const startTag = "[ROUNDTABLE META]"
+    const endTag = "[/ROUNDTABLE META]"
+
+    const startIdx = raw.indexOf(startTag)
+    if (startIdx === -1) return null
+
+    const contentStart = startIdx + startTag.length
+    const endIdx = raw.indexOf(endTag, contentStart)
+    if (endIdx === -1) return null
+
+    const json = raw.slice(contentStart, endIdx).trim()
+    if (!json) return null
+
+    const parsed = JSON.parse(json)
+
+    // — Validate required fields —
+    if (typeof parsed !== "object" || !parsed) return null
+    if (typeof parsed.sessionID !== "string") return null
+    if (typeof parsed.parentSessionID !== "string") return null
+    if (!Array.isArray(parsed.agents)) return null
+    if (typeof parsed.totalRounds !== "number") return null
+    if (typeof parsed.prompt !== "string") return null
+
+    // — Return with defaults for optional/missing fields —
+    return {
+      sessionID: parsed.sessionID,
+      parentSessionID: parsed.parentSessionID,
+      agents: parsed.agents,
+      totalRounds: parsed.totalRounds,
+      observer: parsed.observer ?? "built-in",
+      prompt: parsed.prompt,
+      currentRound: parsed.currentRound ?? 0,
+      currentAgentIndex: parsed.currentAgentIndex ?? 0,
+      phase: parsed.phase ?? "done",
+      history: parsed.history ?? [],
+      errors: parsed.errors ?? [],
+      createdAt: parsed.createdAt ?? 0,
+    }
+  } catch {
+    return null
+  }
 }
