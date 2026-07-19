@@ -777,14 +777,11 @@ export const RoundtablePlugin: Plugin = async (ctx) => {
           rounds: tool.schema.number().min(1).default(1),
           observer: tool.schema.string().optional(),
           sessionID: tool.schema.string().optional(),
-          sessionID: tool.schema.string().optional(),
           title: tool.schema.string().optional(),
         },
         async execute(args, toolCtx) {
-          switch (args.mode) {
-            case "new": return startNewRoundtable(ctx, args, toolCtx, states)
-            case "extend": return extendRoundtable(ctx, args, toolCtx, states)
-          }
+          if (args.sessionID) return extendRoundtable(ctx, args, toolCtx, states)
+          return startNewRoundtable(ctx, args, toolCtx, states)
         },
       }),
 
