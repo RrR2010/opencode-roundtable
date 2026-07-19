@@ -1460,42 +1460,25 @@ function buildAgentPrompt(
 ): string {
   const lines: string[] = []
 
-  // ── Header ──
-  lines.push("╔══ ROUNDTABLE ════════════════════════════════╗")
-  lines.push(`║ Topic: ${state.prompt}`)
-  lines.push(`║ Your role: ${agent}`)
-  lines.push(`║ Round: ${state.currentRound + 1}/${state.totalRounds}`)
-  lines.push(`║ Participants: ${state.agents.join(", ")}`)
-  lines.push("╚══════════════════════════════════════════════╝")
+  lines.push(`Topic: ${state.prompt}`)
+  lines.push(`Your role: ${agent} · Round ${state.currentRound + 1}/${state.totalRounds}`)
   lines.push("")
 
-  // ── Review instruction ──
-  lines.push("Review the discussion above in this session, then provide your response.")
-  lines.push("")
-
-  // ── User interjections (SPEC 7.4) ──
-  // These are NOT visible as regular S2 messages (stored in state only),
-  // so we include them explicitly.
+  // User interjections (SPEC 7.4) — stored in plugin state, not visible in S2
   if (state.userInterjections.length > 0) {
-    lines.push("── User messages in this session ──")
-    for (const text of state.userInterjections) {
-      lines.push(text)
-    }
+    lines.push("── User messages ──")
+    for (const text of state.userInterjections) lines.push(text)
+    lines.push("")
+  }
+
+  const isLastAgent = state.currentAgentIndex === state.agents.length - 1
+  const isLastRound = state.currentRound === state.totalRounds - 1
+  if (isLastAgent && isLastRound) {
+    lines.push("This is the final speech. Summarize your position at the end.")
     lines.push("")
   }
 
   lines.push(`Your turn, ${agent}.`)
-
-  // ── Final speech hint ──
-  const isLastAgent =
-    state.currentAgentIndex === state.agents.length - 1
-  const isLastRound = state.currentRound === state.totalRounds - 1
-  if (isLastAgent && isLastRound) {
-    lines.push(
-      "This is the final speech of the debate. At the end, provide a summary of your position.",
-    )
-  }
-
   return lines.join("\n")
 }
 
