@@ -10,10 +10,31 @@
  */
 
 import { type Plugin, type PluginInput, type ToolContext, tool } from "@opencode-ai/plugin"
-import type { Event, Part } from "@opencode-ai/sdk"
 import { readFile, writeFile } from "fs/promises"
 import { join } from "path"
 import os from "os"
+
+// ============================================================
+// Minimal local types for OpenCode SDK objects
+// (Avoids import from @opencode-ai/sdk which may not resolve
+//  in the plugin runtime context.)
+// ============================================================
+
+/** Shape of a session message Part */
+interface Part {
+  type: string
+  text?: string
+}
+
+/** Shape of event objects received by the event hook */
+interface Event {
+  type: string
+  properties: {
+    sessionID?: string
+    info?: { id?: string }
+    error?: unknown
+  }
+}
 
 // ============================================================
 // Types
