@@ -28,7 +28,8 @@ roundtable({
 
 ## Documentation
 
-Full technical specification: [SPEC.md](./SPEC.md)
+- [SPEC.md](./SPEC.md) — Full technical specification
+- [IMPLEMENTATION.md](./IMPLEMENTATION.md) — Phased implementation plan
 
 ## Requirements
 
