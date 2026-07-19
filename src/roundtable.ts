@@ -610,7 +610,7 @@ async function startNewRoundtable(
 
     // 6. Return confirmation string
     const agentList = agents.join(" → ")
-    return `Roundtable started in child session #${sessionID} (${agentList} · ${args.rounds} round(s))`
+    return `Roundtable started in session #${sessionID} (${agentList} · ${args.rounds} round(s))`
   } catch (err) {
     // Clean up state on failure
     states.delete(sessionID)
