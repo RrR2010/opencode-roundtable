@@ -1455,22 +1455,24 @@ function buildAgentPrompt(
 ): string {
   const lines: string[] = []
 
-  lines.push(`Topic: ${state.prompt}`)
-  lines.push(`Your role: ${agent} · Round ${state.currentRound + 1}/${state.totalRounds}`)
-  lines.push(`Participants: ${state.agents.join(", ")}`)
-  lines.push("")
+  const agentList = state.agents.join(" → ")
+  const roundInfo = `Round ${state.currentRound + 1}/${state.totalRounds} | Current agent: ${agent}`
 
-  // User interjections are visible in S2 directly — no need to re-inject
-  // (SPEC 7.4: user messages become part of the session context)
+  // First turn: include system context explaining the roundtable
+  if (state.currentRound === 0 && state.currentAgentIndex === 0) {
+    lines.push(`[System] You are participating in a roundtable debate. Agents (${agentList}) will discuss the topic below in ${state.totalRounds} round(s).`)
+    lines.push(`[Topic] ${state.prompt}`)
+    lines.push("")
+  }
+
+  lines.push(roundInfo)
 
   const isLastAgent = state.currentAgentIndex === state.agents.length - 1
   const isLastRound = state.currentRound === state.totalRounds - 1
   if (isLastAgent && isLastRound) {
-    lines.push("This is the final speech. Summarize your position at the end.")
-    lines.push("")
+    lines.push("[System] This is the last prompt — finalize your thoughts")
   }
 
-  lines.push(`Your turn, ${agent}.`)
   return lines.join("\n")
 }
 
