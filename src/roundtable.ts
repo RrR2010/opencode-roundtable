@@ -347,65 +347,79 @@ export const RoundtablePlugin: Plugin = async (ctx) => {
       roundtable: tool({
         description:
           "Starts a multi-agent roundtable debate. " +
-          "Agents take turns discussing a topic, each seeing the full discussion history.",
+          "Agents take turns discussing a topic, each seeing the full discussion history. " +
+          "After all rounds, a built-in observer consolidates the debate into an executive summary.",
 
         args: {
           agents: tool.schema
             .array(tool.schema.string())
             .min(2)
-            .optional()
-            .describe("Agent names in speaking order (min 2). Required for mode:'new'; stored from original for mode:'extend'."),
-          prompt: tool.schema.string().describe("Topic or challenge to debate"),
+            .describe("Agent names in speaking order (minimum 2). Example: [\"pm\", \"dev\", \"rv\"]"),
+          prompt: tool.schema
+            .string()
+            .describe("Topic or challenge for the agents to debate"),
           rounds: tool.schema
             .number()
             .min(1)
-            .default(1)
-            .describe("Number of complete rounds"),
+            .describe("Number of complete rounds (each round = all agents speak once). Default: 1"),
           observer: tool.schema
             .string()
             .optional()
-            .describe("Agent name for final consolidation (default: built-in observer)"),
+            .describe("Agent name for final consolidation. Omit to use the built-in observer"),
           mode: tool.schema
             .enum(["new", "extend"])
-            .default("new")
-            .describe("'new' creates a fresh debate; 'extend' continues a concluded one"),
+            .describe("'new' starts a fresh debate; 'extend' continues a concluded one (requires sessionID). Default: \"new\""),
           sessionID: tool.schema
             .string()
             .optional()
-            .describe("S2 session ID to extend (required when mode is 'extend')"),
+            .describe("S2 session ID to extend. Required only when mode is \"extend\""),
           title: tool.schema
             .string()
             .optional()
-            .describe("Custom title for the child session"),
+            .describe("Custom title for the child session. Default: \"Roundtable: A vs B · N round(s)\""),
         },
 
         async execute(args, toolCtx) {
-          switch (args.mode) {
-            case "new": {
-              // Agents are required for new roundtables
-              if (!args.agents || args.agents.length < 2) {
-                return "Error: 'agents' with at least 2 names is required when mode is 'new'"
+          try {
+            // Apply defaults for optional/missing args
+            const rounds = args.rounds ?? 1
+            const mode = args.mode ?? "new"
+
+            switch (mode) {
+              case "new": {
+                if (!args.agents || args.agents.length < 2) {
+                  return "Error: 'agents' with at least 2 names is required when mode is 'new'"
+                }
+                const validation = await validateAgents(ctx, args.agents)
+                if (!validation.valid) {
+                  const available = validation.available.map((a) => a.name).join(", ")
+                  return [
+                    "Invalid agent configuration:",
+                    ...validation.errors.map((e) => `  - ${e}`),
+                    `Available agents: ${available}`,
+                  ].join("\n")
+                }
+                if (rounds > config.maxRounds) {
+                  return `Error: Maximum ${config.maxRounds} rounds allowed (requested: ${rounds})`
+                }
+                return startNewRoundtable(ctx, { ...args, rounds, mode } as RoundtableArgs, toolCtx)
               }
-              const validation = await validateAgents(ctx, args.agents)
-              if (!validation.valid) {
-                const available = validation.available.map((a) => a.name).join(", ")
-                return [
-                  "Invalid agent configuration:",
-                  ...validation.errors.map((e) => `  - ${e}`),
-                  `Available agents: ${available}`,
-                ].join("\n")
+              case "extend": {
+                if (!args.sessionID) {
+                  return "Error: sessionID is required when mode is 'extend'"
+                }
+                return extendRoundtable(ctx, { ...args, rounds, mode } as RoundtableArgs, toolCtx)
               }
-              if (args.rounds > config.maxRounds) {
-                return `Error: Maximum ${config.maxRounds} rounds allowed (requested: ${args.rounds})`
-              }
-              return startNewRoundtable(ctx, args as RoundtableArgs, toolCtx)
             }
-            case "extend": {
-              if (!args.sessionID) {
-                return "Error: sessionID is required when mode is 'extend'"
-              }
-              return extendRoundtable(ctx, args as RoundtableArgs, toolCtx)
-            }
+          } catch (err) {
+            await ctx.client.app.log({
+              body: {
+                service: "roundtable",
+                level: "error",
+                message: `roundtable.execute error: ${err instanceof Error ? err.stack || err.message : String(err)}`,
+              },
+            })
+            return `Error: ${err instanceof Error ? err.message : String(err)}`
           }
         },
       }),
@@ -542,10 +556,9 @@ async function startNewRoundtable(
   // agents is guaranteed by the execute() validation for mode:"new"
   const agents = args.agents!
 
-  // 1. Create S2 as a child of the calling session (S1)
+  // 1. Create S2 as a standalone session (visible in session list)
   const newSession = await ctx.client.session.create({
     body: {
-      parentID: toolCtx.sessionID,
       title: generateDefaultTitle({ ...args, agents }),
     },
   })
@@ -1456,44 +1469,21 @@ function buildAgentPrompt(
   lines.push("╚══════════════════════════════════════════════╝")
   lines.push("")
 
-  // ── Discussion history ──
-  if (state.history.length === 0) {
-    lines.push("The debate is just starting. No previous discussion yet.")
-  } else {
-    lines.push("Discussion so far:")
-    for (const entry of state.history) {
-      lines.push("")
-      lines.push(`━━━  ${entry.agent}  ·  Round ${entry.round + 1}  ━━━`)
-      lines.push(entry.response)
-
-      // Append tool summaries inline
-      if (entry.toolCalls.length > 0) {
-        const toolParts = entry.toolCalls.map((tc) => {
-          const preview =
-            tc.outputPreview.length > 80
-              ? tc.outputPreview.slice(0, 80) + "…"
-              : tc.outputPreview
-          return `${tc.toolName} → ${preview}`
-        })
-        lines.push(`Tools used: ${toolParts.join("; ")}`)
-      }
-
-      if (entry.hasError) {
-        lines.push("(This response had errors)")
-      }
-    }
-  }
+  // ── Review instruction ──
+  lines.push("Review the discussion above in this session, then provide your response.")
+  lines.push("")
 
   // ── User interjections (SPEC 7.4) ──
+  // These are NOT visible as regular S2 messages (stored in state only),
+  // so we include them explicitly.
   if (state.userInterjections.length > 0) {
-    lines.push("")
     lines.push("── User messages in this session ──")
     for (const text of state.userInterjections) {
       lines.push(text)
     }
+    lines.push("")
   }
 
-  lines.push("")
   lines.push(`Your turn, ${agent}.`)
 
   // ── Final speech hint ──
