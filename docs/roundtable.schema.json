@@ -1,0 +1,42 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "RoundtablePluginConfig",
+  "description": "Configuration schema for the Roundtable OpenCode plugin.",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "JSON Schema reference for IDE validation."
+    },
+    "defaultTimeoutMs": {
+      "type": "integer",
+      "description": "Per-agent timeout in milliseconds",
+      "default": 300000,
+      "minimum": 30000
+    },
+    "loopSimilarityThreshold": {
+      "type": "number",
+      "description": "Jaccard bigram similarity threshold for loop detection (0.0 - 1.0)",
+      "default": 0.85,
+      "minimum": 0.0,
+      "maximum": 1.0
+    },
+    "toolOutputPreviewMax": {
+      "type": "integer",
+      "description": "Maximum characters of tool output to include in preview",
+      "default": 500,
+      "minimum": 100
+    },
+    "defaultObserverPrompt": {
+      "type": "string",
+      "description": "Overrides the built-in observer prompt template"
+    },
+    "maxRounds": {
+      "type": "integer",
+      "description": "Maximum rounds allowed (safety limit)",
+      "default": 10,
+      "minimum": 1
+    }
+  },
+  "additionalProperties": false
+}

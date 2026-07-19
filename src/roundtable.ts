@@ -11,6 +11,9 @@
 
 import { type Plugin, type PluginInput, type ToolContext, tool } from "@opencode-ai/plugin"
 import type { Event, Part } from "@opencode-ai/sdk"
+import { readFile, writeFile } from "fs/promises"
+import { join } from "path"
+import os from "os"
 
 // ============================================================
 // Types
@@ -44,6 +47,13 @@ interface RoundtableState {
   errors: string[]
   /** Timestamp when the roundtable was created */
   createdAt: number
+
+  /** Message ID of the last processed assistant message (dedup guard) */
+  lastProcessedMsgId?: string
+  /** Monotonically increasing generation counter for race-condition protection */
+  currentGeneration: number
+  /** User interjection messages from S2 that appeared during the debate */
+  userInterjections: string[]
 }
 
 interface HistoryEntry {
@@ -61,7 +71,16 @@ interface ToolCallSummary {
 }
 
 /** Lifecycle phase of a roundtable session */
-type Phase = "active" | "observing" | "done" | "aborted"
+type Phase = "active" | "observing" | "done" | "aborted" | "pending"
+
+/** Configuration loaded from ~/.config/opencode/roundtable.json */
+interface PluginConfig {
+  defaultTimeoutMs: number
+  loopSimilarityThreshold: number
+  toolOutputPreviewMax: number
+  defaultObserverPrompt: string
+  maxRounds: number
+}
 
 /** Inferred argument shape for the `roundtable` tool */
 interface RoundtableArgs {
@@ -82,27 +101,147 @@ interface ValidationResult {
 }
 
 // ============================================================
-// Constants
+// Config path
 // ============================================================
 
-/** Per-agent timeout in milliseconds (5 minutes) */
-const AGENT_TIMEOUT_MS = 300_000
+const configDir = (() => {
+  const xdgConfigHome = process.env.XDG_CONFIG_HOME
+  if (xdgConfigHome) return join(xdgConfigHome, "opencode")
+  return join(os.homedir(), ".config", "opencode")
+})()
 
-/** Jaccard bigram similarity threshold for loop detection */
-const LOOP_SIMILARITY_THRESHOLD = 0.85
+const configPath = join(configDir, "roundtable.json")
 
-/** Maximum characters of tool output to include in preview */
-const TOOL_OUTPUT_PREVIEW_MAX = 500
+// ============================================================
+// Default configuration (overridable via roundtable.json)
+// ============================================================
 
-/** Default built-in observer prompt */
-const DEFAULT_OBSERVER_PROMPT = `You are an impartial roundtable observer.
+const DEFAULT_CONFIG: PluginConfig = {
+  defaultTimeoutMs: 300_000,
+  loopSimilarityThreshold: 0.85,
+  toolOutputPreviewMax: 500,
+  defaultObserverPrompt: `You are an impartial roundtable observer.
 Consolidate the debate below into:
 
 1. **Executive summary** (2-3 sentences)
 2. **Key points** raised by each participant
 3. **Decisions or convergences** reached
 4. **Remaining open questions**
-5. **Suggested next steps`
+5. **Suggested next steps**`,
+  maxRounds: 10,
+}
+
+/** Runtime configuration — initialised from file on plugin load */
+let config: PluginConfig = { ...DEFAULT_CONFIG }
+
+// ============================================================
+// Config helpers
+// ============================================================
+
+/** URL of the JSON Schema for the config file */
+const configSchemaUrl =
+  "https://raw.githubusercontent.com/opencode-ai/roundtable/main/docs/roundtable.schema.json"
+
+/** Validate a partial config object, filling in missing keys with defaults. */
+function validateConfig(raw: Record<string, unknown>): PluginConfig {
+  return {
+    defaultTimeoutMs:
+      typeof raw.defaultTimeoutMs === "number" &&
+      raw.defaultTimeoutMs >= 30_000
+        ? raw.defaultTimeoutMs
+        : DEFAULT_CONFIG.defaultTimeoutMs,
+    loopSimilarityThreshold:
+      typeof raw.loopSimilarityThreshold === "number" &&
+      raw.loopSimilarityThreshold >= 0 &&
+      raw.loopSimilarityThreshold <= 1
+        ? raw.loopSimilarityThreshold
+        : DEFAULT_CONFIG.loopSimilarityThreshold,
+    toolOutputPreviewMax:
+      typeof raw.toolOutputPreviewMax === "number" &&
+      raw.toolOutputPreviewMax >= 100
+        ? raw.toolOutputPreviewMax
+        : DEFAULT_CONFIG.toolOutputPreviewMax,
+    defaultObserverPrompt:
+      typeof raw.defaultObserverPrompt === "string" &&
+      raw.defaultObserverPrompt.length > 0
+        ? raw.defaultObserverPrompt
+        : DEFAULT_CONFIG.defaultObserverPrompt,
+    maxRounds:
+      typeof raw.maxRounds === "number" && raw.maxRounds >= 1
+        ? raw.maxRounds
+        : DEFAULT_CONFIG.maxRounds,
+  }
+}
+
+/**
+ * Load configuration from roundtable.json.
+ * If the file does not exist, create it with defaults.
+ * If it exists but is invalid, log a warning and use hardcoded defaults.
+ */
+async function loadConfig(ctx: PluginInput): Promise<void> {
+  try {
+    const content = await readFile(configPath, "utf-8")
+    const raw = JSON.parse(content)
+
+    if (typeof raw !== "object" || !raw) {
+      throw new Error("Invalid config format")
+    }
+
+    config = validateConfig(raw as Record<string, unknown>)
+
+    await ctx.client.app.log({
+      body: {
+        service: "roundtable",
+        level: "info",
+        message: "Configuration loaded",
+        extra: { configPath },
+      },
+    })
+  } catch (err) {
+    // File does not exist — create it with defaults
+    if (
+      typeof err === "object" &&
+      err !== null &&
+      "code" in err &&
+      (err as { code: string }).code === "ENOENT"
+    ) {
+      try {
+        const defaultWithSchema = {
+          $schema: configSchemaUrl,
+          ...DEFAULT_CONFIG,
+        }
+        await writeFile(configPath, JSON.stringify(defaultWithSchema, null, 2), "utf-8")
+        config = { ...DEFAULT_CONFIG }
+        await ctx.client.app.log({
+          body: {
+            service: "roundtable",
+            level: "info",
+            message: "Created default configuration",
+            extra: { configPath },
+          },
+        })
+      } catch {
+        // Best-effort — fall back to defaults
+        config = { ...DEFAULT_CONFIG }
+      }
+    } else {
+      // File exists but is invalid — warn and use defaults
+      try {
+        await ctx.client.app.log({
+          body: {
+            service: "roundtable",
+            level: "warn",
+            message: `Invalid config, using defaults: ${err instanceof Error ? err.message : String(err)}`,
+            extra: { configPath },
+          },
+        })
+      } catch {
+        // Best-effort
+      }
+      config = { ...DEFAULT_CONFIG }
+    }
+  }
+}
 
 // ============================================================
 // Module-level state stores
@@ -119,6 +258,13 @@ const timeoutHandles = new Map<string, ReturnType<typeof setTimeout>>()
 // ============================================================
 
 export const RoundtablePlugin: Plugin = async (ctx) => {
+  // Load config (best-effort — must not crash the plugin)
+  try {
+    await loadConfig(ctx)
+  } catch {
+    // Falls back to DEFAULT_CONFIG
+  }
+
   // Phase 1: log-only initialization (best-effort — must not crash the plugin)
   try {
     await scanOrphanRoundtables(ctx)
@@ -247,12 +393,16 @@ export const RoundtablePlugin: Plugin = async (ctx) => {
 
         args: {},
 
-        async execute() {
-          const result = await ctx.client.app.agents()
-          const names = result.data.map(
-            (a: { name: string; description?: string }) => a.name,
-          )
-          return `Available agents: ${names.join(", ")}`
+        async execute(_args, _ctx) {
+          try {
+            const result = await ctx.client.app.agents()
+            const names = result.data.map(
+              (a: { name: string; description?: string }) => a.name,
+            )
+            return `Available agents: ${names.join(", ")}`
+          } catch {
+            return "Error: Could not fetch agent list. The server might not be ready."
+          }
         },
       }),
     },
@@ -393,32 +543,42 @@ async function startNewRoundtable(
     history: [],
     errors: [],
     createdAt: Date.now(),
+    currentGeneration: 0,
+    userInterjections: [],
   }
+
+  // Register BEFORE fallible operations — if something fails, we clean up
   states.set(sessionID, state)
 
-  // 3. Serialise initial state as a noReply message in S2 (survives compaction)
-  await ctx.client.session.prompt({
-    path: { id: sessionID },
-    body: {
-      noReply: true,
-      parts: [{ type: "text", text: serializeState(state) }],
-    },
-  })
+  try {
+    // 3. Serialise initial state as a noReply message in S2 (survives compaction)
+    await ctx.client.session.prompt({
+      path: { id: sessionID },
+      body: {
+        noReply: true,
+        parts: [{ type: "text", text: serializeState(state) }],
+      },
+    })
 
-  // 4. Send the first prompt to agents[0]
-  await sendToAgent(ctx, state)
+    // 4. Send the first prompt to agents[0]
+    await sendToAgent(ctx, state)
 
-  // 5. Toast to the user
-  await ctx.client.tui.showToast({
-    body: {
-      message: `Roundtable started in #${sessionID} (${agents.join(" → ")} · ${args.rounds} round(s))`,
-      variant: "info",
-    },
-  })
+    // 5. Toast to the user
+    await ctx.client.tui.showToast({
+      body: {
+        message: `Roundtable started in #${sessionID} (${agents.join(" → ")} · ${args.rounds} round(s))`,
+        variant: "info",
+      },
+    })
 
-  // 6. Return confirmation string
-  const agentList = agents.join(" → ")
-  return `Roundtable started in child session #${sessionID} (${agentList} · ${args.rounds} round(s))`
+    // 6. Return confirmation string
+    const agentList = agents.join(" → ")
+    return `Roundtable started in child session #${sessionID} (${agentList} · ${args.rounds} round(s))`
+  } catch (err) {
+    // Clean up state on failure
+    states.delete(sessionID)
+    throw err
+  }
 }
 
 // ============================================================
@@ -590,40 +750,50 @@ async function extendRoundtable(
     history: [...originalState.history],
     errors: [...originalState.errors],
     createdAt: Date.now(),
+    currentGeneration: 0,
+    userInterjections: [...originalState.userInterjections],
   }
+
+  // Register BEFORE fallible operations
   states.set(sessionID, newState)
 
-  // 8. Re-serialize updated state into S2 (replaces old meta)
-  await ctx.client.session.prompt({
-    path: { id: sessionID },
-    body: {
-      noReply: true,
-      parts: [{ type: "text", text: serializeState(newState) }],
-    },
-  })
+  try {
+    // 8. Re-serialize updated state into S2 (replaces old meta)
+    await ctx.client.session.prompt({
+      path: { id: sessionID },
+      body: {
+        noReply: true,
+        parts: [{ type: "text", text: serializeState(newState) }],
+      },
+    })
 
-  // 9. Update S2 title to reflect extended rounds
-  const agentList = originalState.agents.join(" vs ")
-  await ctx.client.session.update({
-    path: { id: sessionID },
-    body: {
-      title: `Roundtable: ${agentList} (R${newState.currentRound + 1}/${newState.totalRounds})`,
-    },
-  })
+    // 9. Update S2 title to reflect extended rounds
+    const agentList = originalState.agents.join(" vs ")
+    await ctx.client.session.update({
+      path: { id: sessionID },
+      body: {
+        title: `Roundtable: ${agentList} (R${newState.currentRound + 1}/${newState.totalRounds})`,
+      },
+    })
 
-  // 10. Send extended prompt to agents[0]
-  await sendToAgent(ctx, newState)
+    // 10. Send extended prompt to agents[0]
+    await sendToAgent(ctx, newState)
 
-  // 11. Toast
-  await ctx.client.tui.showToast({
-    body: {
-      message: `Roundtable #${sessionID} extended — ${args.rounds} more round(s) (${originalState.agents.join(" → ")})`,
-      variant: "info",
-    },
-  })
+    // 11. Toast
+    await ctx.client.tui.showToast({
+      body: {
+        message: `Roundtable #${sessionID} extended — ${args.rounds} more round(s) (${originalState.agents.join(" → ")})`,
+        variant: "info",
+      },
+    })
 
-  // 12. Return confirmation
-  return `Roundtable #${sessionID} extended with ${args.rounds} additional round(s). Debate continues with ${args.rounds > 1 ? `${args.rounds} more rounds` : "1 more round"}.`
+    // 12. Return confirmation
+    return `Roundtable #${sessionID} extended with ${args.rounds} additional round(s). Debate continues with ${args.rounds > 1 ? `${args.rounds} more rounds` : "1 more round"}.`
+  } catch (err) {
+    // Clean up state on failure
+    states.delete(sessionID)
+    throw err
+  }
 }
 
 /**
@@ -647,13 +817,33 @@ async function processNextTurn(
   })
   const messages = result.data
 
-  // 2. Find the latest assistant message (the one that just finished)
+  // 2. Collect user interjections (SPEC 7.4) — user messages in S2
+  const userMsgs = messages.filter(
+    (m: { info: { role: string } }) => m.info.role === "user",
+  )
+  const previousInterjectionCount = state.userInterjections.length
+  for (const msg of userMsgs) {
+    for (const part of msg.parts) {
+      if (part.type === "text" && !part.text.includes("[ROUNDTABLE META]")) {
+        // Avoid duplicating interjections already captured
+        if (!state.userInterjections.includes(part.text)) {
+          state.userInterjections.push(part.text)
+        }
+      }
+    }
+  }
+
+  // 3. Find the latest assistant message (the one that just finished)
   const assistantMsgs = messages.filter(
     (m: { info: { role: string } }) => m.info.role === "assistant",
   )
   if (assistantMsgs.length === 0) return // no assistant response yet
 
   const latestMsg = assistantMsgs[assistantMsgs.length - 1]
+
+  // 4. Duplicate session.idle guard: skip if we already processed this message
+  if (state.lastProcessedMsgId === latestMsg.info.id) return
+  state.lastProcessedMsgId = latestMsg.info.id
 
   // =================================================================
   // ACTIVE PHASE — process a debater's response
@@ -681,10 +871,38 @@ async function processNextTurn(
     }
     state.history.push(entry)
 
+    // Debug log for turn completion
+    await ctx.client.app.log({
+      body: {
+        service: "roundtable",
+        level: "debug",
+        message: `Turn complete: ${entry.agent} (R${state.currentRound + 1})`,
+        extra: {
+          sessionID: state.sessionID,
+          agent: entry.agent,
+          round: state.currentRound + 1,
+          responseLength: entry.response.length,
+          toolCallCount: entry.toolCalls.length,
+          hasError: entry.hasError,
+        },
+      },
+    })
+
     // 6. Loop detection (compare last two responses)
     if (detectLoop(state.history)) {
       state.errors.push("Loop detected — agents reached an impasse")
       state.phase = "done"
+      await ctx.client.app.log({
+        body: {
+          service: "roundtable",
+          level: "debug",
+          message: "Loop detected — finalizing early",
+          extra: {
+            sessionID: state.sessionID,
+            similarity: config.loopSimilarityThreshold,
+          },
+        },
+      })
       await finalizeRoundtable(ctx, state)
       return
     }
@@ -703,6 +921,17 @@ async function processNextTurn(
     } else {
       // ── All rounds complete → transition to observer ──
       state.phase = "observing"
+      await ctx.client.app.log({
+        body: {
+          service: "roundtable",
+          level: "debug",
+          message: "All rounds complete — transitioning to observer",
+          extra: {
+            sessionID: state.sessionID,
+            totalRounds: state.totalRounds,
+          },
+        },
+      })
       await sendObserverPrompt(ctx, state)
     }
     return
@@ -736,36 +965,72 @@ async function sendToAgent(
   ctx: PluginInput,
   state: RoundtableState,
 ): Promise<void> {
-  const agent = state.agents[state.currentAgentIndex]
-  const prompt = buildAgentPrompt(state, agent)
+  try {
+    const agent = state.agents[state.currentAgentIndex]
+    const prompt = buildAgentPrompt(state, agent)
 
-  // 1. Send prompt to the agent
-  await ctx.client.session.prompt({
-    path: { id: state.sessionID },
-    body: {
-      agent,
-      parts: [{ type: "text", text: prompt }],
-    },
-  })
+    // 1. Send prompt to the agent
+    await ctx.client.session.prompt({
+      path: { id: state.sessionID },
+      body: {
+        agent,
+        parts: [{ type: "text", text: prompt }],
+      },
+    })
 
-  // 2. Set timeout: if the agent takes > AGENT_TIMEOUT_MS, abort the session
-  const handle = setTimeout(async () => {
-    try {
-      await ctx.client.session.abort({
-        path: { id: state.sessionID },
-      })
-      state.errors.push(
-        `Agent "${agent}" timed out after ${AGENT_TIMEOUT_MS / 1000}s`,
-      )
-    } catch {
-      // Session may already be done or aborted — ignore
+    // 2. Increment generation and set timeout
+    state.currentGeneration++
+    const capturedGeneration = state.currentGeneration
+
+    const handle = setTimeout(async () => {
+      // Delete handle FIRST to prevent stale-callback re-entry
+      timeoutHandles.delete(state.sessionID)
+
+      // If generation changed, the agent already finished — bail out
+      if (state.currentGeneration !== capturedGeneration) return
+
+      try {
+        await ctx.client.session.abort({
+          path: { id: state.sessionID },
+        })
+        state.errors.push(
+          `Agent "${agent}" timed out after ${config.defaultTimeoutMs / 1000}s`,
+        )
+      } catch {
+        // Session may already be done or aborted — ignore
+      }
+    }, config.defaultTimeoutMs)
+
+    timeoutHandles.set(state.sessionID, handle)
+
+    // 3. Update S2 title to reflect current round
+    await updateSessionTitle(ctx, state)
+
+    // 4. Debug log
+    await ctx.client.app.log({
+      body: {
+        service: "roundtable",
+        level: "debug",
+        message: `Turn started: ${agent} (R${state.currentRound + 1}/${state.totalRounds})`,
+        extra: {
+          sessionID: state.sessionID,
+          agent,
+          round: state.currentRound + 1,
+          totalRounds: state.totalRounds,
+          generation: state.currentGeneration,
+        },
+      },
+    })
+  } catch (err) {
+    state.errors.push(
+      `Failed to send to agent "${state.agents[state.currentAgentIndex]}": ${err instanceof Error ? err.message : String(err)}`,
+    )
+    const handle = timeoutHandles.get(state.sessionID)
+    if (handle) {
+      clearTimeout(handle)
+      timeoutHandles.delete(state.sessionID)
     }
-  }, AGENT_TIMEOUT_MS)
-
-  timeoutHandles.set(state.sessionID, handle)
-
-  // 3. Update S2 title to reflect current round
-  await updateSessionTitle(ctx, state)
+  }
 }
 
 /**
@@ -794,26 +1059,47 @@ async function sendObserverPrompt(
   ctx: PluginInput,
   state: RoundtableState,
 ): Promise<void> {
-  const prompt = buildObserverPrompt(state, state.observer)
+  try {
+    const prompt = buildObserverPrompt(state, state.observer)
 
-  if (state.observer === "built-in") {
-    // Default observer: send to the session itself (session default model)
-    await ctx.client.session.prompt({
-      path: { id: state.sessionID },
+    if (state.observer === "built-in") {
+      // Default observer: send to the session itself (session default model)
+      await ctx.client.session.prompt({
+        path: { id: state.sessionID },
+        body: {
+          noReply: false,
+          parts: [{ type: "text", text: prompt }],
+        },
+      })
+    } else {
+      // Explicit observer: send to the named agent
+      await ctx.client.session.prompt({
+        path: { id: state.sessionID },
+        body: {
+          agent: state.observer,
+          parts: [{ type: "text", text: prompt }],
+        },
+      })
+    }
+
+    // Debug log
+    await ctx.client.app.log({
       body: {
-        noReply: false,
-        parts: [{ type: "text", text: prompt }],
+        service: "roundtable",
+        level: "debug",
+        message: `Observer prompt sent: ${state.observer}`,
+        extra: {
+          sessionID: state.sessionID,
+          observer: state.observer,
+        },
       },
     })
-  } else {
-    // Explicit observer: send to the named agent
-    await ctx.client.session.prompt({
-      path: { id: state.sessionID },
-      body: {
-        agent: state.observer,
-        parts: [{ type: "text", text: prompt }],
-      },
-    })
+  } catch (err) {
+    state.errors.push(
+      `Failed to send observer prompt: ${err instanceof Error ? err.message : String(err)}`,
+    )
+    state.phase = "aborted"
+    await finalizeRoundtable(ctx, state)
   }
 }
 
@@ -885,6 +1171,18 @@ async function finalizeRoundtable(
   } finally {
     // 6. Clear in-memory state
     states.delete(sessionID)
+    try {
+      await ctx.client.app.log({
+        body: {
+          service: "roundtable",
+          level: "debug",
+          message: `State cleaned up for session #${sessionID}`,
+          extra: { sessionID, phase: state.phase },
+        },
+      })
+    } catch {
+      // Best-effort
+    }
   }
 }
 
@@ -934,6 +1232,13 @@ async function handleAgentError(
   state: RoundtableState,
   event: Event,
 ): Promise<void> {
+  // Phase guard: if the observer is failing, abort rather than skip
+  if (state.phase === "observing" || state.phase === "done") {
+    state.phase = "aborted"
+    await finalizeRoundtable(ctx, state)
+    return
+  }
+
   const agent = state.agents[state.currentAgentIndex]
   const errorMsg =
     event.type === "session.error" && event.properties.error
@@ -1032,6 +1337,18 @@ async function handleSessionDeleted(
     } catch {
       // Parent session may also be gone
     }
+    try {
+      await ctx.client.app.log({
+        body: {
+          service: "roundtable",
+          level: "debug",
+          message: `S2 deleted — partial result injected into S1`,
+          extra: { sessionID: deletedSessionID, parentSessionID: state.parentSessionID },
+        },
+      })
+    } catch {
+      // Best-effort
+    }
   } else if (deletedSessionID === state.parentSessionID) {
     // ── S1 was deleted → abort S2 ──
     state.phase = "aborted"
@@ -1041,6 +1358,18 @@ async function handleSessionDeleted(
       })
     } catch {
       // S2 may already be gone
+    }
+    try {
+      await ctx.client.app.log({
+        body: {
+          service: "roundtable",
+          level: "debug",
+          message: "S1 deleted — S2 aborted",
+          extra: { sessionID: state.sessionID, parentSessionID: deletedSessionID },
+        },
+      })
+    } catch {
+      // Best-effort
     }
   }
 
@@ -1097,6 +1426,15 @@ function buildAgentPrompt(
     }
   }
 
+  // ── User interjections (SPEC 7.4) ──
+  if (state.userInterjections.length > 0) {
+    lines.push("")
+    lines.push("── User messages in this session ──")
+    for (const text of state.userInterjections) {
+      lines.push(text)
+    }
+  }
+
   lines.push("")
   lines.push(`Your turn, ${agent}.`)
 
@@ -1133,14 +1471,16 @@ function buildObserverPrompt(
     )
     .join("\n\n")
 
+  const observerPrompt = config.defaultObserverPrompt
+
   if (observer === "built-in") {
-    return `${DEFAULT_OBSERVER_PROMPT}\n\nDebate:\n${historyText}`
+    return `${observerPrompt}\n\nDebate:\n${historyText}`
   }
 
   return (
     `You are an impartial roundtable observer.\n` +
     `Your role: ${observer}. Provide an executive summary of the debate.\n\n` +
-    `${DEFAULT_OBSERVER_PROMPT}\n\nDebate:\n${historyText}`
+    `${observerPrompt}\n\nDebate:\n${historyText}`
   )
 }
 
@@ -1197,7 +1537,7 @@ function detectLoop(history: HistoryEntry[]): boolean {
   const union = new Set([...lastBigrams, ...prevBigrams])
   if (union.size === 0) return false // empty strings
 
-  return intersection / union.size > LOOP_SIMILARITY_THRESHOLD
+  return intersection / union.size > config.loopSimilarityThreshold
 }
 
 /**
@@ -1212,7 +1552,7 @@ function buildToolSummary(part: Part): ToolCallSummary | null {
 
   switch (part.state.status) {
     case "completed":
-      outputPreview = part.state.output.slice(0, TOOL_OUTPUT_PREVIEW_MAX)
+      outputPreview = part.state.output.slice(0, config.toolOutputPreviewMax)
       break
     case "error":
       outputPreview = "error"
