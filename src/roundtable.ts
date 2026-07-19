@@ -1460,6 +1460,7 @@ function buildAgentPrompt(
 
   lines.push(`Topic: ${state.prompt}`)
   lines.push(`Your role: ${agent} · Round ${state.currentRound + 1}/${state.totalRounds}`)
+  lines.push(`Participants: ${state.agents.join(", ")}`)
   lines.push("")
 
   // User interjections are visible in S2 directly — no need to re-inject
@@ -1570,7 +1571,7 @@ function buildToolSummary(part: Part): ToolCallSummary | null {
       outputPreview = part.state.output.slice(0, config.toolOutputPreviewMax)
       break
     case "error":
-      outputPreview = "error"
+      outputPreview = (part.state.output ?? "(unknown error)").slice(0, config.toolOutputPreviewMax)
       break
     case "running":
     case "pending":
