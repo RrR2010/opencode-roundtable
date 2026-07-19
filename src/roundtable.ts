@@ -105,12 +105,11 @@ interface PluginConfig {
 
 /** Inferred argument shape for the `roundtable` tool */
 interface RoundtableArgs {
-  /** Agent names in speaking order. Required for mode:"new", stored from original for mode:"extend" */
+  /** Agent names in speaking order. Required for new debates; stored from original for extend */
   agents?: string[]
   prompt: string
   rounds: number
   observer?: string
-  mode: "new" | "extend"
   sessionID?: string
   title?: string
 }
@@ -371,13 +370,10 @@ export const RoundtablePlugin: Plugin = async (ctx) => {
             .string()
             .optional()
             .describe("Agent name for final consolidation. Omit to use the built-in observer"),
-          mode: tool.schema
-            .enum(["new", "extend"])
-            .describe("'new' starts a fresh debate; 'extend' continues a concluded one (requires sessionID). Default: \"new\""),
           sessionID: tool.schema
             .string()
             .optional()
-            .describe("S2 session ID to extend. Required only when mode is \"extend\""),
+            .describe("S2 session ID to extend a previous roundtable. Omit to start a fresh debate."),
           title: tool.schema
             .string()
             .optional()
@@ -386,45 +382,39 @@ export const RoundtablePlugin: Plugin = async (ctx) => {
 
         async execute(args, toolCtx) {
           try {
-            // Apply defaults for optional/missing args
             const rounds = args.rounds ?? 1
-            const mode = args.mode ?? "new"
 
-            switch (mode) {
-              case "new": {
-                if (!args.agents || args.agents.length < 2) {
-                  return "Error: 'agents' with at least 2 names is required when mode is 'new'"
-                }
-                const validation = await validateAgents(ctx, args.agents)
-                if (!validation.valid) {
-                  const available = validation.available.map((a) => a.name).join(", ")
-                  return [
-                    "Invalid agent configuration:",
-                    ...validation.errors.map((e) => `  - ${e}`),
-                    `Available agents: ${available}`,
-                  ].join("\n")
-                }
-                if (rounds > config.maxRounds) {
-                  return `Error: Maximum ${config.maxRounds} rounds allowed (requested: ${rounds})`
-                }
-                const sessionID = await startNewRoundtable(ctx, { ...args, rounds, mode } as RoundtableArgs, toolCtx)
-                // Await debate completion — this keeps the tool "loading" until the debate finishes
-                const result = await new Promise<string>((resolve) => {
-                  pendingResults.set(sessionID, { resolve })
-                })
-                return result
-              }
-              case "extend": {
-                if (!args.sessionID) {
-                  return "Error: sessionID is required when mode is 'extend'"
-                }
-                const sessionID = await extendRoundtable(ctx, { ...args, rounds, mode } as RoundtableArgs, toolCtx)
-                const result = await new Promise<string>((resolve) => {
-                  pendingResults.set(sessionID, { resolve })
-                })
-                return result
-              }
+            if (args.sessionID) {
+              // Continue a previous roundtable
+              const sessionID = await extendRoundtable(ctx, { ...args, rounds } as RoundtableArgs, toolCtx)
+              const result = await new Promise<string>((resolve) => {
+                pendingResults.set(sessionID, { resolve })
+              })
+              return result
             }
+
+            // Start a fresh debate
+            if (!args.agents || args.agents.length < 2) {
+              return "Error: 'agents' with at least 2 names is required"
+            }
+            const validation = await validateAgents(ctx, args.agents)
+            if (!validation.valid) {
+              const available = validation.available.map((a) => a.name).join(", ")
+              return [
+                "Invalid agent configuration:",
+                ...validation.errors.map((e) => `  - ${e}`),
+                `Available agents: ${available}`,
+              ].join("\n")
+            }
+            if (rounds > config.maxRounds) {
+              return `Error: Maximum ${config.maxRounds} rounds allowed (requested: ${rounds})`
+            }
+
+            const sessionID = await startNewRoundtable(ctx, { ...args, rounds } as RoundtableArgs, toolCtx)
+            const result = await new Promise<string>((resolve) => {
+              pendingResults.set(sessionID, { resolve })
+            })
+            return result
           } catch (err) {
             await ctx.client.app.log({
               body: {
