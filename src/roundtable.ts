@@ -350,34 +350,58 @@ export const RoundtablePlugin: Plugin = async (ctx) => {
     tool: {
       roundtable: tool({
         description:
-          "Starts a multi-agent roundtable debate. " +
-          "Agents take turns discussing a topic, each seeing the full discussion history. " +
-          "After all rounds, a built-in observer consolidates the debate into an executive summary.",
+          "Starts a multi-agent roundtable debate where agents discuss a topic turn by turn. " +
+          "After all rounds, a built-in observer consolidates the discussion into an executive summary.\n\n" +
+          "Choosing agents: select agents based on their expertise (e.g., pm for product decisions, " +
+          "dev for technical trade-offs, rv for code review). You can also specify in the prompt " +
+          "what each agent should focus on (e.g., 'pm: focus on cost; dev: focus on maintainability').\n\n" +
+          "Multiple rounds: for complex topics, use 2+ rounds and have each round focus on a " +
+          "different aspect (e.g., round 1: pros, round 2: cons, round 3: implementation plan). " +
+          "The default is 1 round.",
 
         args: {
           agents: tool.schema
             .array(tool.schema.string())
             .min(2)
-            .describe("Agent names in speaking order (minimum 2). Example: [\"pm\", \"dev\", \"rv\"]"),
+            .describe(
+              "Agent names in speaking order (minimum 2). Choose agents based on " +
+              "their expertise — each brings a different perspective. Example: [\"pm\", \"dev\", \"rv\"]",
+            ),
           prompt: tool.schema
             .string()
-            .describe("Topic or challenge for the agents to debate"),
+            .describe(
+              "Topic or challenge for the agents to debate. For complex topics, consider " +
+              "adding per-agent focus areas (e.g., 'pm: evaluate cost; dev: evaluate complexity').",
+            ),
           rounds: tool.schema
             .number()
             .min(1)
-            .describe("Number of complete rounds (each round = all agents speak once). Default: 1"),
+            .describe(
+              "Number of complete rounds where each round = all agents speak once. " +
+              "Default: 1. For complex topics, use 2+ rounds and focus each round on " +
+              "different aspect (pros, cons, risks, plan, etc.)",
+            ),
           observer: tool.schema
             .string()
             .optional()
-            .describe("Agent name for final consolidation. Omit to use the built-in observer"),
+            .describe(
+              "Agent name for final consolidation. The observer does not debate — it " +
+              "summarizes after all rounds. Omit to use the built-in observer.",
+            ),
           sessionID: tool.schema
             .string()
             .optional()
-            .describe("S2 session ID to extend a previous roundtable. Omit to start a fresh debate."),
+            .describe(
+              "Pass a previous session ID to continue a concluded roundtable. " +
+              "Omit this parameter and pass agents + prompt to start a fresh debate.",
+            ),
           title: tool.schema
             .string()
             .optional()
-            .describe("Custom title for the child session. Default: \"Roundtable: A vs B · N round(s)\""),
+            .describe(
+              "Custom title for the session. If omitted, the plugin generates " +
+              "\"(Roundtable) - {prompt summary}\" automatically.",
+            ),
         },
 
         async execute(args, toolCtx) {
@@ -435,8 +459,9 @@ export const RoundtablePlugin: Plugin = async (ctx) => {
 
       available_agents: tool({
         description:
-          "Lists all configured agents that can participate in a roundtable. " +
-          "Use this to discover agent names before calling roundtable().",
+          "Lists all configured agents and their roles. " +
+          "Use this to choose which agents should participate in a roundtable " +
+          "based on their descriptions — then call roundtable() with your selection.",
 
         args: {},
 
