@@ -10,7 +10,7 @@
  */
 
 import { type Plugin, type PluginInput, type ToolContext, tool } from "@opencode-ai/plugin"
-import type { Event } from "@opencode-ai/sdk"
+import type { Event, Part } from "@opencode-ai/sdk"
 
 // ============================================================
 // Types
@@ -104,44 +104,61 @@ Consolidate the debate below into:
 5. **Suggested next steps`
 
 // ============================================================
+// Module-level state stores
+// ============================================================
+
+/** Map<S2 session ID → RoundtableState> */
+const states = new Map<string, RoundtableState>()
+
+/** Map<S2 session ID → setTimeout handle> for agent timeout management */
+const timeoutHandles = new Map<string, ReturnType<typeof setTimeout>>()
+
+// ============================================================
 // Plugin
 // ============================================================
 
 export const RoundtablePlugin: Plugin = async (ctx) => {
-  /** Map<S2 session ID, RoundtableState> */
-  const states = new Map<string, RoundtableState>()
-
   // Phase 1: log-only initialization
-  await scanOrphanRoundtables(ctx, states)
+  await scanOrphanRoundtables(ctx)
 
   return {
     event: async ({ event }) => {
       const sessionID = getSessionIdFromEvent(event)
       if (!sessionID || !states.has(sessionID)) return
 
-      // Phase 1: event handler shell — acknowledge receipt only
-      await ctx.client.app.log({
-        body: {
-          service: "roundtable",
-          level: "debug",
-          message: `Event received for active roundtable: ${event.type}`,
-          extra: { sessionID, eventType: event.type },
-        },
-      })
+      const state = states.get(sessionID)!
 
-      // Phase 2+ will dispatch:
-      //   event.type === "session.idle"    → processNextTurn()
-      //   event.type === "session.error"   → handleAgentError()
-      //   event.type === "session.deleted" → handleSessionDeleted()
+      switch (event.type) {
+        case "session.idle": {
+          // Clear any pending agent timeout
+          const handle = timeoutHandles.get(sessionID)
+          if (handle) {
+            clearTimeout(handle)
+            timeoutHandles.delete(sessionID)
+          }
+          // Process the turn regardless of phase
+          await processNextTurn(ctx, state)
+          break
+        }
+        case "session.error": {
+          await handleAgentError(ctx, state, event)
+          break
+        }
+        case "session.deleted": {
+          // session.deleted carries the session in info.id
+          const deletedID = event.properties.info.id
+          await handleSessionDeleted(ctx, state, deletedID)
+          break
+        }
+      }
     },
 
     "experimental.session.compacting": async (
       _input: { sessionID: string },
       _output: { context: string[]; prompt?: string },
     ) => {
-      // Phase 1: stub — will re-inject [ROUNDTABLE META] state in Phase 4
-      // The compaction hook preserves critical state during session compaction
-      // so the roundtable can survive token-limit compression.
+      // Phase 4: will re-inject [ROUNDTABLE META] state during compaction
+      // to preserve the roundtable across token-limit compression.
     },
 
     tool: {
@@ -193,12 +210,12 @@ export const RoundtablePlugin: Plugin = async (ctx) => {
 
           switch (args.mode) {
             case "new":
-              return startNewRoundtable(ctx, args as RoundtableArgs, toolCtx, states)
+              return startNewRoundtable(ctx, args as RoundtableArgs, toolCtx)
             case "extend": {
               if (!args.sessionID) {
                 return "Error: sessionID is required when mode is 'extend'"
               }
-              return extendRoundtable(ctx, args as RoundtableArgs, toolCtx, states)
+              return extendRoundtable(ctx, args as RoundtableArgs, toolCtx)
             }
           }
         },
@@ -318,164 +335,711 @@ async function validateAgents(
 }
 
 // ============================================================
-// Phase 1 Stubs  (full implementations in Phases 2+)
+// Core Roundtable Functions
 // ============================================================
 
 /**
  * Create a new roundtable session (S2) and start the debate.
  */
 async function startNewRoundtable(
-  _ctx: PluginInput,
+  ctx: PluginInput,
   args: RoundtableArgs,
-  _toolCtx: ToolContext,
-  _states: Map<string, RoundtableState>,
+  toolCtx: ToolContext,
 ): Promise<string> {
+  // 1. Create S2 as a child of the calling session (S1)
+  const newSession = await ctx.client.session.create({
+    body: {
+      parentID: toolCtx.sessionID,
+      title: generateDefaultTitle(args),
+    },
+  })
+
+  const sessionID = newSession.data.id
+  const parentSessionID = toolCtx.sessionID
+
+  // 2. Initialise in-memory state
+  const state: RoundtableState = {
+    sessionID,
+    parentSessionID,
+    agents: args.agents,
+    totalRounds: args.rounds,
+    observer: args.observer ?? "built-in",
+    prompt: args.prompt,
+    currentRound: 0,
+    currentAgentIndex: 0,
+    phase: "active",
+    history: [],
+    errors: [],
+    createdAt: Date.now(),
+  }
+  states.set(sessionID, state)
+
+  // 3. Serialise initial state as a noReply message in S2 (survives compaction)
+  await ctx.client.session.prompt({
+    path: { id: sessionID },
+    body: {
+      noReply: true,
+      parts: [{ type: "text", text: serializeState(state) }],
+    },
+  })
+
+  // 4. Send the first prompt to agents[0]
+  await sendToAgent(ctx, state)
+
+  // 5. Toast to the user
+  await ctx.client.tui.showToast({
+    body: {
+      message: `Roundtable started in #${sessionID} (${args.agents.join(" → ")} · ${args.rounds} round(s))`,
+      variant: "info",
+    },
+  })
+
+  // 6. Return confirmation string
   const agentList = args.agents.join(" → ")
-  return [
-    `[Phase 1] Roundtable validated: ${agentList} · ${args.rounds} round(s).`,
-    "Session creation, agent sequencing, and debate execution will be implemented in Phase 2.",
-  ].join("\n")
+  return `Roundtable started in child session #${sessionID} (${agentList} · ${args.rounds} round(s))`
 }
 
 /**
  * Continue a concluded roundtable with additional rounds.
+ *
+ * Phase 5: fetches S2 by sessionID, deserializes state from [ROUNDTABLE META],
+ * restores config + history, and starts new rounds.
  */
 async function extendRoundtable(
   _ctx: PluginInput,
   args: RoundtableArgs,
   _toolCtx: ToolContext,
-  _states: Map<string, RoundtableState>,
 ): Promise<string> {
   return [
-    `[Phase 1] Extend mode validated. Session: ${args.sessionID}, rounds: ${args.rounds}.`,
-    "Full extend flow will be implemented in Phase 5.",
+    `[Phase 5] Extend mode validated. Session: ${args.sessionID}, rounds: ${args.rounds}.`,
+    "Full extend flow with state deserialization will be implemented in Phase 5.",
   ].join("\n")
 }
 
 /**
  * Process the next turn in the round-robin sequence.
  * Called when `session.idle` fires on S2.
+ *
+ * Handles two phases:
+ * - "active"    → extract last response, build history, decide next turn
+ * - "observing" → extract observer summary, finalise the roundtable
  */
 async function processNextTurn(
-  _ctx: PluginInput,
-  _state: RoundtableState,
+  ctx: PluginInput,
+  state: RoundtableState,
 ): Promise<void> {
-  // Phase 2: read messages, build history, determine next agent or finalize
+  // Guard: ignore idle events for sessions that are done or aborted
+  if (state.phase === "done" || state.phase === "aborted") return
+
+  // 1. Read S2 messages
+  const result = await ctx.client.session.messages({
+    path: { id: state.sessionID },
+  })
+  const messages = result.data
+
+  // 2. Find the latest assistant message (the one that just finished)
+  const assistantMsgs = messages.filter(
+    (m: { info: { role: string } }) => m.info.role === "assistant",
+  )
+  if (assistantMsgs.length === 0) return // no assistant response yet
+
+  const latestMsg = assistantMsgs[assistantMsgs.length - 1]
+
+  // =================================================================
+  // ACTIVE PHASE — process a debater's response
+  // =================================================================
+  if (state.phase === "active") {
+    // 3. Extract response text
+    const response = extractResponse(latestMsg.parts)
+    if (!response) {
+      // No text part found — treat as an error for this turn
+      state.errors.push(
+        `Agent ${state.agents[state.currentAgentIndex]} returned no text in round ${state.currentRound + 1}`,
+      )
+    }
+
+    // 4. Build tool summaries from the message parts
+    const toolCalls = buildToolSummaries(latestMsg.parts)
+
+    // 5. Append to history
+    const entry: HistoryEntry = {
+      agent: state.agents[state.currentAgentIndex],
+      round: state.currentRound,
+      response: response ?? "(no text response)",
+      toolCalls,
+      hasError: response === null,
+    }
+    state.history.push(entry)
+
+    // 6. Loop detection (compare last two responses)
+    if (detectLoop(state.history)) {
+      state.errors.push("Loop detected — agents reached an impasse")
+      state.phase = "done"
+      await finalizeRoundtable(ctx, state)
+      return
+    }
+
+    // 7. Determine next step
+    const nextIndex = state.currentAgentIndex + 1
+    if (nextIndex < state.agents.length) {
+      // ── Next agent in this round ──
+      state.currentAgentIndex = nextIndex
+      await sendToAgent(ctx, state)
+    } else if (state.currentRound + 1 < state.totalRounds) {
+      // ── Next round, back to first agent ──
+      state.currentRound++
+      state.currentAgentIndex = 0
+      await sendToAgent(ctx, state)
+    } else {
+      // ── All rounds complete → transition to observer ──
+      state.phase = "observing"
+      await sendObserverPrompt(ctx, state)
+    }
+    return
+  }
+
+  // =================================================================
+  // OBSERVING PHASE — extract the observer's summary and finalise
+  // =================================================================
+  if (state.phase === "observing") {
+    const summary = extractResponse(latestMsg.parts)
+    state.history.push({
+      agent: "observer",
+      round: state.currentRound,
+      response: summary ?? "(no summary)",
+      toolCalls: [],
+      hasError: summary === null,
+    })
+
+    state.phase = "done"
+    await finalizeRoundtable(ctx, state)
+  }
 }
 
 /**
- * Send a prompt to a specific agent in the roundtable session.
+ * Send a prompt to the current agent in the roundtable session.
+ *
+ * Builds the agent prompt from history, sends it via session.prompt(),
+ * starts the 5-minute timeout, and updates the S2 title.
  */
 async function sendToAgent(
-  _ctx: PluginInput,
-  _state: RoundtableState,
-  _agent: string,
-  _prompt: string,
+  ctx: PluginInput,
+  state: RoundtableState,
 ): Promise<void> {
-  // Phase 2: session.prompt({ agent, parts })
+  const agent = state.agents[state.currentAgentIndex]
+  const prompt = buildAgentPrompt(state, agent)
+
+  // 1. Send prompt to the agent
+  await ctx.client.session.prompt({
+    path: { id: state.sessionID },
+    body: {
+      agent,
+      parts: [{ type: "text", text: prompt }],
+    },
+  })
+
+  // 2. Set timeout: if the agent takes > AGENT_TIMEOUT_MS, abort the session
+  const handle = setTimeout(async () => {
+    try {
+      await ctx.client.session.abort({
+        path: { id: state.sessionID },
+      })
+      state.errors.push(
+        `Agent "${agent}" timed out after ${AGENT_TIMEOUT_MS / 1000}s`,
+      )
+    } catch {
+      // Session may already be done or aborted — ignore
+    }
+  }, AGENT_TIMEOUT_MS)
+
+  timeoutHandles.set(state.sessionID, handle)
+
+  // 3. Update S2 title to reflect current round
+  await updateSessionTitle(ctx, state)
+}
+
+/**
+ * Update the S2 session title with current round progress.
+ */
+async function updateSessionTitle(
+  ctx: PluginInput,
+  state: RoundtableState,
+): Promise<void> {
+  const agentList = state.agents.join(" vs ")
+  const roundInfo = `R${state.currentRound + 1}/${state.totalRounds}`
+  const title = `Roundtable: ${agentList} (${roundInfo})`
+  await ctx.client.session.update({
+    path: { id: state.sessionID },
+    body: { title },
+  })
+}
+
+/**
+ * Send the observer prompt after all debate rounds are complete.
+ *
+ * - Explicit observer (named agent) → sends to that agent with its personality
+ * - Default built-in observer        → sends to S2 (no specific agent)
+ */
+async function sendObserverPrompt(
+  ctx: PluginInput,
+  state: RoundtableState,
+): Promise<void> {
+  const prompt = buildObserverPrompt(state, state.observer)
+
+  if (state.observer === "built-in") {
+    // Default observer: send to the session itself (session default model)
+    await ctx.client.session.prompt({
+      path: { id: state.sessionID },
+      body: {
+        noReply: false,
+        parts: [{ type: "text", text: prompt }],
+      },
+    })
+  } else {
+    // Explicit observer: send to the named agent
+    await ctx.client.session.prompt({
+      path: { id: state.sessionID },
+      body: {
+        agent: state.observer,
+        parts: [{ type: "text", text: prompt }],
+      },
+    })
+  }
 }
 
 /**
  * Finalize the roundtable: inject result into S1, delimit S2, clean up.
+ *
+ * Called after:
+ * - Observer finishes (normal conclusion)
+ * - Loop detection fires (early conclusion)
  */
 async function finalizeRoundtable(
-  _ctx: PluginInput,
-  _state: RoundtableState,
+  ctx: PluginInput,
+  state: RoundtableState,
 ): Promise<void> {
-  // Phase 3: inject noReply in S1, delimiter in S2, update title, toast
+  const sessionID = state.sessionID
+  const parentSessionID = state.parentSessionID
+
+  try {
+    // 1. Build consolidated summary from history
+    const summary = buildConsolidatedSummary(state)
+
+    // 2. Inject final result into S1 as a noReply message
+    await ctx.client.session.prompt({
+      path: { id: parentSessionID },
+      body: {
+        noReply: true,
+        parts: [{ type: "text", text: summary }],
+      },
+    })
+
+    // 3. Inject delimiter in S2
+    await injectRoundtableDelimiter(ctx, sessionID)
+
+    // 4. Update S2 title to CONCLUDED
+    const agentList = state.agents.join(" vs ")
+    await ctx.client.session.update({
+      path: { id: sessionID },
+      body: { title: `Roundtable: ${agentList} · CONCLUDED` },
+    })
+
+    // 5. Show toast
+    await ctx.client.tui.showToast({
+      body: {
+        message: "Roundtable concluded",
+        variant: "success",
+      },
+    })
+  } catch (err) {
+    // Log error but still clean up state
+    try {
+      await ctx.client.app.log({
+        body: {
+          service: "roundtable",
+          level: "error",
+          message: `Failed to finalize roundtable #${sessionID}: ${err instanceof Error ? err.message : String(err)}`,
+          extra: { sessionID, phase: state.phase },
+        },
+      })
+    } catch {
+      // Best-effort logging
+    }
+  } finally {
+    // 6. Clear in-memory state
+    states.delete(sessionID)
+  }
+}
+
+/**
+ * Build a plain-text consolidated summary from the roundtable history.
+ */
+function buildConsolidatedSummary(state: RoundtableState): string {
+  const lines: string[] = []
+  lines.push(`━━━ Roundtable Concluded ━━━`)
+  lines.push(`Topic: ${state.prompt}`)
+  lines.push(`Participants: ${state.agents.join(", ")}`)
+  if (state.errors.length > 0) {
+    lines.push(`Errors: ${state.errors.join("; ")}`)
+  }
+  lines.push("")
+
+  for (const entry of state.history) {
+    const label =
+      entry.agent === "observer"
+        ? "Observer"
+        : `${entry.agent} (Round ${entry.round + 1})`
+    lines.push(`── ${label} ──`)
+    lines.push(entry.response)
+    if (entry.toolCalls.length > 0) {
+      const toolLines = entry.toolCalls.map(
+        (tc) => `  • ${tc.toolName} → ${tc.outputPreview.slice(0, 80)}`,
+      )
+      lines.push(...toolLines)
+    }
+    if (entry.hasError) {
+      lines.push("  ⚠ This response had errors")
+    }
+    lines.push("")
+  }
+
+  return lines.join("\n")
 }
 
 /**
  * Handle an agent error (provider failure, timeout, etc.).
+ *
+ * Logs the error, shows a toast, and attempts to skip to the next agent.
+ * If all agents fail, aborts the roundtable.
  */
 async function handleAgentError(
-  _ctx: PluginInput,
-  _state: RoundtableState,
+  ctx: PluginInput,
+  state: RoundtableState,
+  event: Event,
 ): Promise<void> {
-  // Phase 4: log error, skip to next agent, toast
+  const agent = state.agents[state.currentAgentIndex]
+  const errorMsg =
+    event.type === "session.error" && event.properties.error
+      ? String(event.properties.error)
+      : "Unknown error"
+
+  state.errors.push(`Agent "${agent}" failed on round ${state.currentRound + 1}: ${errorMsg}`)
+
+  // Clear any pending timeout for this session
+  const handle = timeoutHandles.get(state.sessionID)
+  if (handle) {
+    clearTimeout(handle)
+    timeoutHandles.delete(state.sessionID)
+  }
+
+  // Show toast
+  await ctx.client.tui.showToast({
+    body: {
+      message: `"${agent}" failed on Round ${state.currentRound + 1}. Skipping to next.`,
+      variant: "warning",
+    },
+  })
+
+  // Determine if we should skip or abort
+  const nextIndex = state.currentAgentIndex + 1
+  if (nextIndex < state.agents.length) {
+    // Skip to next agent in this round
+    state.currentAgentIndex = nextIndex
+    await sendToAgent(ctx, state)
+  } else if (state.currentRound + 1 < state.totalRounds) {
+    // Move to next round
+    state.currentRound++
+    state.currentAgentIndex = 0
+    await sendToAgent(ctx, state)
+  } else {
+    // All agents failed — abort
+    state.phase = "aborted"
+    try {
+      await ctx.client.tui.showToast({
+        body: {
+          message: "All agents failed — roundtable aborted",
+          variant: "error",
+        },
+      })
+    } catch {
+      // Best-effort
+    }
+    states.delete(state.sessionID)
+  }
 }
 
 /**
- * Handle session deletion (S2 closed by user, or S1 closed).
+ * Handle session deletion.
+ *
+ * - If S2 (roundtable session) is deleted: inject partial history into S1, clean up.
+ * - If S1 (parent session) is deleted: abort S2, clean up.
  */
 async function handleSessionDeleted(
-  _ctx: PluginInput,
-  _state: RoundtableState,
-  _deletedSessionID: string,
+  ctx: PluginInput,
+  state: RoundtableState,
+  deletedSessionID: string,
 ): Promise<void> {
-  // Phase 4: inject partial history into S1, clean up
+  if (deletedSessionID === state.sessionID) {
+    // ── S2 was deleted → inject partial result into S1 ──
+    state.phase = "aborted"
+
+    const partialSummary = buildConsolidatedSummary(state)
+    const lines = [
+      "[Roundtable interrupted — session closed]",
+      "Partial history up to interruption:",
+      "",
+      partialSummary,
+    ]
+
+    try {
+      await ctx.client.session.prompt({
+        path: { id: state.parentSessionID },
+        body: {
+          noReply: true,
+          parts: [{ type: "text", text: lines.join("\n") }],
+        },
+      })
+      await ctx.client.tui.showToast({
+        body: {
+          message: "Roundtable interrupted",
+          variant: "warning",
+        },
+      })
+    } catch {
+      // Parent session may also be gone
+    }
+  } else if (deletedSessionID === state.parentSessionID) {
+    // ── S1 was deleted → abort S2 ──
+    state.phase = "aborted"
+    try {
+      await ctx.client.session.abort({
+        path: { id: state.sessionID },
+      })
+    } catch {
+      // S2 may already be gone
+    }
+  }
+
+  // Clean up state
+  states.delete(state.sessionID)
 }
 
 /**
  * Build the structured prompt sent to each agent on their turn.
  *
- * Format from SPEC §6:
- *   ╔══ ROUNDTABLE ═══╗
- *   Topic: {prompt}
- *   Your role: {agentName}
- *   ...
+ * Template from SPEC §6 — shows topic, role, round info, participants,
+ * full discussion history with tool outputs, and turn-specific instructions.
  */
 function buildAgentPrompt(
   state: RoundtableState,
   agent: string,
 ): string {
-  // Phase 2: template formatting from SPEC §6
-  void state, void agent
-  return "" // stub
+  const lines: string[] = []
+
+  // ── Header ──
+  lines.push("╔══ ROUNDTABLE ════════════════════════════════╗")
+  lines.push(`║ Topic: ${state.prompt}`)
+  lines.push(`║ Your role: ${agent}`)
+  lines.push(`║ Round: ${state.currentRound + 1}/${state.totalRounds}`)
+  lines.push(`║ Participants: ${state.agents.join(", ")}`)
+  lines.push("╚══════════════════════════════════════════════╝")
+  lines.push("")
+
+  // ── Discussion history ──
+  if (state.history.length === 0) {
+    lines.push("The debate is just starting. No previous discussion yet.")
+  } else {
+    lines.push("Discussion so far:")
+    for (const entry of state.history) {
+      lines.push("")
+      lines.push(`━━━  ${entry.agent}  ·  Round ${entry.round + 1}  ━━━`)
+      lines.push(entry.response)
+
+      // Append tool summaries inline
+      if (entry.toolCalls.length > 0) {
+        const toolParts = entry.toolCalls.map((tc) => {
+          const preview =
+            tc.outputPreview.length > 80
+              ? tc.outputPreview.slice(0, 80) + "…"
+              : tc.outputPreview
+          return `${tc.toolName} → ${preview}`
+        })
+        lines.push(`Tools used: ${toolParts.join("; ")}`)
+      }
+
+      if (entry.hasError) {
+        lines.push("(This response had errors)")
+      }
+    }
+  }
+
+  lines.push("")
+  lines.push(`Your turn, ${agent}.`)
+
+  // ── Final speech hint ──
+  const isLastAgent =
+    state.currentAgentIndex === state.agents.length - 1
+  const isLastRound = state.currentRound === state.totalRounds - 1
+  if (isLastAgent && isLastRound) {
+    lines.push(
+      "This is the final speech of the debate. At the end, provide a summary of your position.",
+    )
+  }
+
+  return lines.join("\n")
 }
 
 /**
  * Build the observer prompt from the full debate history.
+ *
+ * - Explicit observer: role-specific instructions are added.
+ * - Default (built-in): uses the DEFAULT_OBSERVER_PROMPT template.
  */
 function buildObserverPrompt(
   state: RoundtableState,
-  observer?: string,
+  observer: "built-in" | string,
 ): string {
-  // Phase 3: format history into observer prompt
-  void state, void observer
-  return "" // stub
+  const historyText = state.history
+    .map(
+      (entry) =>
+        `── ${entry.agent} (Round ${entry.round + 1}) ──\n${entry.response}` +
+        (entry.toolCalls.length > 0
+          ? `\nTools: ${entry.toolCalls.map((t) => `${t.toolName} → ${t.outputPreview.slice(0, 100)}`).join("; ")}`
+          : ""),
+    )
+    .join("\n\n")
+
+  if (observer === "built-in") {
+    return `${DEFAULT_OBSERVER_PROMPT}\n\nDebate:\n${historyText}`
+  }
+
+  return (
+    `You are an impartial roundtable observer.\n` +
+    `Your role: ${observer}. Provide an executive summary of the debate.\n\n` +
+    `${DEFAULT_OBSERVER_PROMPT}\n\nDebate:\n${historyText}`
+  )
 }
 
 /**
- * Extract the latest assistant response text from session messages.
- * Returns null if no assistant response is found.
+ * Extract the assistant response text from a message's parts array.
+ * Returns the first `type: "text"` content, or null if none found.
  */
-function extractResponse(
-  _messages: unknown[],
-): string | null {
-  // Phase 3: parse messages for latest assistant text part
-  return null // stub
+function extractResponse(parts: Part[]): string | null {
+  for (const part of parts) {
+    if (part.type === "text") {
+      return part.text
+    }
+  }
+  return null
 }
 
 /**
  * Detect debate loop using Jaccard similarity of character bigrams.
- * Returns true if similarity exceeds LOOP_SIMILARITY_THRESHOLD.
+ *
+ * Compares the last response against the previous one.
+ * Returns true if similarity exceeds LOOP_SIMILARITY_THRESHOLD (0.85).
+ *
+ * Why Jaccard bigrams?
+ * - Purely computational (no LLM calls or embeddings needed)
+ * - Zero external dependencies
+ * - Reasonable for detecting textual argument repetition
  */
-function detectLoop(
-  _history: HistoryEntry[],
-): boolean {
-  // Phase 6: Jaccard bigram comparison
-  return false // stub
+function detectLoop(history: HistoryEntry[]): boolean {
+  if (history.length < 2) return false
+
+  const last = history[history.length - 1].response
+  const prev = history[history.length - 2].response
+
+  // Build character bigram sets
+  const bigrams = (s: string): Set<string> => {
+    const set = new Set<string>()
+    const cleaned = s.replace(/[\s\n\r]+/g, " ") // normalise whitespace
+    for (let i = 0; i < cleaned.length - 1; i++) {
+      set.add(cleaned.slice(i, i + 2))
+    }
+    return set
+  }
+
+  const lastBigrams = bigrams(last)
+  const prevBigrams = bigrams(prev)
+
+  // Intersection size
+  let intersection = 0
+  for (const b of lastBigrams) {
+    if (prevBigrams.has(b)) intersection++
+  }
+
+  // Union size
+  const union = new Set([...lastBigrams, ...prevBigrams])
+  if (union.size === 0) return false // empty strings
+
+  return intersection / union.size > LOOP_SIMILARITY_THRESHOLD
 }
 
 /**
- * Build a ToolCallSummary from a tool part in session messages.
+ * Build a ToolCallSummary from a single Part.
+ * Returns null if the part is not a tool part.
  */
-function buildToolSummary(
-  _part: unknown,
-): ToolCallSummary {
-  // Phase 6: extract tool name + preview
-  return { toolName: "", outputPreview: "" } // stub
+function buildToolSummary(part: Part): ToolCallSummary | null {
+  if (part.type !== "tool") return null
+
+  const toolName = part.tool
+  let outputPreview: string
+
+  switch (part.state.status) {
+    case "completed":
+      outputPreview = part.state.output.slice(0, TOOL_OUTPUT_PREVIEW_MAX)
+      break
+    case "error":
+      outputPreview = "error"
+      break
+    case "running":
+    case "pending":
+      outputPreview = `(${part.state.status})`
+      break
+    default:
+      outputPreview = "(unknown)"
+      break
+  }
+
+  return { toolName, outputPreview }
+}
+
+/**
+ * Build an array of ToolCallSummary from a message's parts array.
+ * Filters out non-tool parts.
+ */
+function buildToolSummaries(parts: Part[]): ToolCallSummary[] {
+  const summaries: ToolCallSummary[] = []
+  for (const part of parts) {
+    const summary = buildToolSummary(part)
+    if (summary) summaries.push(summary)
+  }
+  return summaries
 }
 
 /**
  * Inject the "━━━ Roundtable Concluded ━━━" delimiter into S2.
+ *
+ * Messages below this line are no longer part of the original debate.
  */
 async function injectRoundtableDelimiter(
-  _ctx: PluginInput,
-  _sessionID: string,
+  ctx: PluginInput,
+  sessionID: string,
 ): Promise<void> {
-  // Phase 3: session.prompt({ noReply: true, parts: [...] })
+  const delimiter = [
+    "━━━ Roundtable Concluded ━━━",
+    "Messages below this line are not part of the original debate.",
+    "The result was consolidated in the main session.",
+  ].join("\n")
+
+  await ctx.client.session.prompt({
+    path: { id: sessionID },
+    body: {
+      noReply: true,
+      parts: [{ type: "text", text: delimiter }],
+    },
+  })
 }
 
 /**
@@ -486,7 +1050,6 @@ async function injectRoundtableDelimiter(
  */
 async function scanOrphanRoundtables(
   ctx: PluginInput,
-  _states: Map<string, RoundtableState>,
 ): Promise<void> {
   await ctx.client.app.log({
     body: {
@@ -514,15 +1077,18 @@ function generateDefaultTitle(args: RoundtableArgs): string {
 /**
  * Serialize roundtable state into a string tagged for persistence.
  *
+ * The tagged format survives session compaction and enables the
+ * `extend` mode (Phase 5). The state is stored as a noReply message
+ * at the start of S2.
+ *
  * Format:
  *   [ROUNDTABLE META]
  *   {JSON}
  *   [/ROUNDTABLE META]
  */
 function serializeState(state: RoundtableState): string {
-  // Phase 5: JSON.stringify with tags
-  void state
-  return "" // stub
+  const json = JSON.stringify(state, null, 2)
+  return `[ROUNDTABLE META]\n${json}\n[/ROUNDTABLE META]`
 }
 
 /**
