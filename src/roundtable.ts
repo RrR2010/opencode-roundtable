@@ -374,6 +374,9 @@ export const RoundtablePlugin: Plugin = async (ctx) => {
                   `Available agents: ${available}`,
                 ].join("\n")
               }
+              if (args.rounds > config.maxRounds) {
+                return `Error: Maximum ${config.maxRounds} rounds allowed (requested: ${args.rounds})`
+              }
               return startNewRoundtable(ctx, args as RoundtableArgs, toolCtx)
             }
             case "extend": {
@@ -751,7 +754,7 @@ async function extendRoundtable(
     errors: [...originalState.errors],
     createdAt: Date.now(),
     currentGeneration: 0,
-    userInterjections: [...originalState.userInterjections],
+    userInterjections: [...(originalState.userInterjections ?? [])],
   }
 
   // Register BEFORE fallible operations
@@ -1267,14 +1270,47 @@ async function handleAgentError(
   if (nextIndex < state.agents.length) {
     // Skip to next agent in this round
     state.currentAgentIndex = nextIndex
+    try {
+      await ctx.client.app.log({
+        body: {
+          service: "roundtable",
+          level: "debug",
+          message: `Agent skipped due to error`,
+          extra: {
+            sessionID: state.sessionID,
+            failedAgent: agent,
+            nextAgent: state.agents[state.currentAgentIndex],
+            round: state.currentRound + 1,
+          },
+        },
+      })
+    } catch {
+      // Best-effort
+    }
     await sendToAgent(ctx, state)
   } else if (state.currentRound + 1 < state.totalRounds) {
     // Move to next round
     state.currentRound++
     state.currentAgentIndex = 0
+    try {
+      await ctx.client.app.log({
+        body: {
+          service: "roundtable",
+          level: "debug",
+          message: `Agent skipped due to error — moving to next round`,
+          extra: {
+            sessionID: state.sessionID,
+            failedAgent: agent,
+            round: state.currentRound + 1,
+          },
+        },
+      })
+    } catch {
+      // Best-effort
+    }
     await sendToAgent(ctx, state)
   } else {
-    // All agents failed — abort
+    // All agents failed — abort and finalize
     state.phase = "aborted"
     try {
       await ctx.client.tui.showToast({
@@ -1286,7 +1322,8 @@ async function handleAgentError(
     } catch {
       // Best-effort
     }
-    states.delete(state.sessionID)
+    // finalizeRoundtable injects partial result into S1, adds delimiter, cleans up state
+    await finalizeRoundtable(ctx, state)
   }
 }
 
@@ -1618,7 +1655,7 @@ async function scanOrphanRoundtables(
   await ctx.client.app.log({
     body: {
       service: "roundtable",
-      level: "info",
+      level: "debug",
       message:
         "scanOrphanRoundtables initialized (Phase 1 — no scanning yet; " +
         "full implementation in Phase 4)",
@@ -1701,6 +1738,9 @@ function deserializeState(raw: string): RoundtableState | null {
       history: parsed.history ?? [],
       errors: parsed.errors ?? [],
       createdAt: parsed.createdAt ?? 0,
+      currentGeneration: parsed.currentGeneration ?? 0,
+      userInterjections: parsed.userInterjections ?? [],
+      lastProcessedMsgId: parsed.lastProcessedMsgId ?? undefined,
     }
   } catch {
     return null
