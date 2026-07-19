@@ -1278,7 +1278,9 @@ async function handleAgentError(
   const agent = state.agents[state.currentAgentIndex]
   const errorMsg =
     event.type === "session.error" && event.properties.error
-      ? String(event.properties.error)
+      ? typeof event.properties.error === "object"
+        ? (event.properties.error as { message?: string }).message ?? JSON.stringify(event.properties.error)
+        : String(event.properties.error)
       : "Unknown error"
 
   state.errors.push(`Agent "${agent}" failed on round ${state.currentRound + 1}: ${errorMsg}`)
