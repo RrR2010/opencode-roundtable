@@ -1,0 +1,8 @@
+{
+  "name": "opencode-roundtable",
+  "version": "0.1.0",
+  "description": "Multi-agent round-robin debate plugin for OpenCode",
+  "main": "src/roundtable.ts",
+  "keywords": ["opencode", "plugin", "multi-agent", "debate", "roundtable"],
+  "license": "MIT"
+}
