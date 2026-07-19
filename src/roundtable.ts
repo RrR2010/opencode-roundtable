@@ -500,8 +500,8 @@ function getSessionIdFromEvent(event: Event): string | undefined {
  *
  * Checks:
  * 1. Minimum 2 agents provided
- * 2. No duplicate names
- * 3. Every name matches a configured agent
+ * 2. Every name matches a configured agent
+ *    (Duplicate names are allowed — two "plan" agents can debate each other)
  */
 async function validateAgents(
   ctx: PluginInput,
@@ -512,18 +512,6 @@ async function validateAgents(
   // --- Min 2 check ---
   if (agentNames.length < 2) {
     errors.push("At least 2 agents are required")
-    return { valid: false, available: [], errors }
-  }
-
-  // --- Duplicates check ---
-  const seen = new Set<string>()
-  for (const name of agentNames) {
-    if (seen.has(name)) {
-      errors.push(`Duplicate agent: "${name}"`)
-    }
-    seen.add(name)
-  }
-  if (errors.length > 0) {
     return { valid: false, available: [], errors }
   }
 
