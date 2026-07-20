@@ -58,6 +58,7 @@ roundtable({
   observer?: string,    // Agent for final consolidation (default: built-in)
   sessionID?: string,   // ses_xxxx — pass to extend a concluded debate
   title?: string,       // Custom title (default: auto-generated from prompt)
+  observerPrompt?: string, // Override the observer consolidation prompt (e.g., "Save a detailed report to report.md")
 })
 ```
 

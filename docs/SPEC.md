@@ -136,6 +136,7 @@ roundtable({
   observer?: string,            // Agent for final consolidation (default: built-in)
   sessionID?: string,           // ses_xxxx — pass to extend a concluded roundtable
   title?: string,               // Custom title (auto-generated if omitted)
+  observerPrompt?: string,      // Override the observer consolidation prompt entirely
 })
 ```
 
@@ -154,6 +155,7 @@ the debate (role-setting, topic, turn routing, and lifecycle signals).
 | `observer` | `string` | No | `built-in` | Agent name for final consolidation. Observer does not debate — it summarizes after all rounds |
 | `sessionID` | `string` | No* | — | Session ID (format: `ses_xxxx`). Pass to extend a concluded roundtable. Omit (and pass `agents`) for a fresh debate |
 | `title` | `string` | No | Auto | Custom title (max 200 chars). Auto-generated as `"(Roundtable) - {first 60 chars of prompt, truncated at word boundary}"` if omitted |
+| `observerPrompt` | `string` | No | — | Overrides the default observer consolidation prompt. Use to control format — e.g., `"Output as JSON"`, `"Save a detailed report to report.md"`, `"Focus only on technical decisions"` |
 
 ### Available agents tool
 
@@ -645,8 +647,23 @@ If the orchestrator passes `observer: "rv"`, the plugin:
 
 ### Observer prompt is configurable
 
-The `defaultObserverPrompt` field in `roundtable.json` overrides the built-in
-prompt template.
+**Per-call override (runtime):** pass `observerPrompt` in the `roundtable()` call.
+This completely replaces the observer prompt for that debate:
+
+```
+roundtable({
+  agents: ["pm", "dev", "rv"],
+  prompt: "...",
+  observerPrompt: "Output only a single emoji that captures the discussion",
+})
+```
+
+The `observerPrompt` is persisted in the state file and carried over on extend
+(unless a new `observerPrompt` is provided in the extend call).
+
+**Static override (config):** the `defaultObserverPrompt` field in
+`roundtable.json` replaces the built-in template for all debates that don't
+provide a per-call `observerPrompt`.
 
 ---
 
