@@ -1,8 +1,60 @@
 {
-  "name": "opencode-roundtable",
-  "version": "0.1.0",
+  "name": "@rrr2010/opencode-roundtable",
+  "version": "0.3.2",
   "description": "Multi-agent round-robin debate plugin for OpenCode",
-  "main": "src/roundtable.ts",
-  "keywords": ["opencode", "plugin", "multi-agent", "debate", "roundtable"],
-  "license": "MIT"
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./tui": {
+      "import": "./src/tui/tui.tsx",
+      "types": "./src/tui/tui.tsx"
+    }
+  },
+  "files": [
+    "dist",
+    "src/tui/",
+    "README.md",
+    "docs/SPEC.md",
+    "docs/roundtable.schema.json",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "bun build index.ts --outdir dist --target node --format esm --sourcemap --external @opencode-ai/plugin --external @opencode-ai/sdk",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "bun run build",
+    "dev:install": "bun run build && npm link"
+  },
+  "keywords": [
+    "opencode",
+    "plugin",
+    "multi-agent",
+    "debate",
+    "roundtable"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/opencode-ai/roundtable.git"
+  },
+  "homepage": "https://github.com/opencode-ai/roundtable#readme",
+  "bugs": {
+    "url": "https://github.com/opencode-ai/roundtable/issues"
+  },
+  "peerDependencies": {
+    "@opencode-ai/plugin": "latest",
+    "@opentui/core": "^0.4.2",
+    "@opentui/solid": "^0.4.2",
+    "solid-js": "^1.9.12"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "latest",
+    "typescript": "^5.7.0"
+  }
 }
