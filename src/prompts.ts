@@ -4,10 +4,10 @@ import { getConfig } from "./config"
 export function buildAgentPrompt(state: RoundtableState, agent: string): string {
   const lines: string[] = []
   const agentList = state.agents.join(" → ")
-  const roundInfo = `Round ${state.currentRound + 1}/${state.totalRounds} | Current agent: ${agent}`
+  const roundInfo = `Round ${state.currentRound + 1} of ${state.totalRounds} · Current agent: ${agent}`
 
-  if (state.currentRound === 0 && state.currentAgentIndex === 0) {
-    lines.push(`[System] You are participating in a roundtable debate. Agents (${agentList}) will discuss the topic below in ${state.totalRounds} round(s).`)
+  if (state.history.length === 0) {
+    lines.push(`[RULES] Roundtable: ${agentList}, ${state.totalRounds} round(s). Topic below.`)
     lines.push(`[Topic] ${state.prompt}`)
     lines.push("")
   }
@@ -17,7 +17,7 @@ export function buildAgentPrompt(state: RoundtableState, agent: string): string 
   const isLastAgent = state.currentAgentIndex === state.agents.length - 1
   const isLastRound = state.currentRound === state.totalRounds - 1
   if (isLastAgent && isLastRound) {
-    lines.push("[System] This is the last prompt — finalize your thoughts")
+    lines.push("[TURN] FINAL — finalize your thoughts")
   }
 
   return lines.join("\n")

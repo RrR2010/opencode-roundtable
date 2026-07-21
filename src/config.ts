@@ -21,7 +21,7 @@ const DEFAULT_CONFIG: PluginConfig = {
   toolOutputPreviewMax: 500,
   defaultObserverPrompt: [
     "You are an impartial roundtable observer.",
-    "Consolidate the debate below into:",
+    "Consolidate the debate above into:",
     "",
     "1. **Executive summary** (2-3 sentences)",
     "2. **Key points** raised by each participant",

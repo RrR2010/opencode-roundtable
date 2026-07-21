@@ -4,23 +4,6 @@ import type { TuiPluginModule, TuiPluginApi } from "@opencode-ai/plugin/tui"
 
 let api: TuiPluginApi
 
-function Badge(props: { title: string }) {
-  if (!props.title?.startsWith("⚡")) return null
-  return <text>[RT]</text>
-}
-
-function LinkPanel(props: { sessionId: string }) {
-  const session = api.state.session.get(props.sessionId)
-  if (session?.parentID) {
-    return (
-      <a on:click={() => api.route.navigate("session", { sessionID: session.parentID! })}>
-        ← Back
-      </a>
-    )
-  }
-  return null
-}
-
 async function showRoundtables() {
   try {
     const res = await api.client.session.list()
@@ -74,13 +57,6 @@ const tui: TuiPluginModule["tui"] = async (a) => {
       onSelect: () => showRoundtables(),
     },
   ])
-
-  api.slots.register({
-    slots: {
-      sidebar_title: (_ctx, props) => <Badge title={props.title} />,
-      sidebar_content: (_ctx, props) => <LinkPanel sessionId={props.session_id} />,
-    },
-  })
 }
 
 export default {

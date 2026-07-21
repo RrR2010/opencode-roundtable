@@ -115,23 +115,17 @@ export function buildToolSummaries(parts: Part[]): ToolCallSummary[] {
 }
 
 export function buildConsolidatedSummary(state: RoundtableState): string {
+  const observerEntry = [...state.history].reverse().find(e => e.agent === "observer")
+
+  if (observerEntry) {
+    return observerEntry.response
+  }
+
   const lines: string[] = []
-  lines.push("━━━ Roundtable Concluded ━━━")
+  lines.push(`━━━ Roundtable ${state.errors.length > 0 ? "Aborted" : "Concluded"} ━━━`)
   lines.push(`Topic: ${state.prompt}`)
   lines.push(`Participants: ${state.agents.join(", ")}`)
   if (state.errors.length > 0) lines.push(`Errors: ${state.errors.join("; ")}`)
-  lines.push("")
-
-  for (const entry of state.history) {
-    const label = entry.agent === "observer" ? "Observer" : `${entry.agent} (Round ${entry.round + 1})`
-    lines.push(`── ${label} ──`)
-    lines.push(entry.response)
-    if (entry.toolCalls.length > 0) {
-      lines.push(...entry.toolCalls.map((tc) => `  \u2022 ${tc.toolName} \u2192 ${tc.outputPreview.slice(0, 80)}`))
-    }
-    if (entry.hasError) lines.push("  \u26A0 This response had errors")
-    lines.push("")
-  }
   return lines.join("\n")
 }
 
@@ -151,24 +145,8 @@ export async function injectRoundtableDelimiter(
   })
 }
 
-export function buildExtendedPrompt(originalPrompt: string, extendPrompt: string): string {
-  const continuationTriggers = [
-    "debate more", "continue", "dive deeper", "go deeper",
-    "expand on", "elaborate", "further discuss", "keep debating",
-  ]
-  const lower = extendPrompt.toLowerCase().trim()
-  const isContinuation = continuationTriggers.some((trigger) => lower.startsWith(trigger))
-
-  if (isContinuation) {
-    return `Original topic: ${originalPrompt}\n\nContinuation: ${extendPrompt}`
-  }
-
-  return [
-    "Previous discussion history preserved. Original topic was:",
-    `  ${originalPrompt}`,
-    "",
-    `New challenge: ${extendPrompt}`,
-  ].join("\n")
+export function buildExtendedPrompt(_originalPrompt: string, extendPrompt: string): string {
+  return `Continue for more rounds. Focus on:\n${extendPrompt}`
 }
 
 export async function navigateToSession(

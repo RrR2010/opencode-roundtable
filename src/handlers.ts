@@ -44,7 +44,6 @@ export async function startNewRoundtable(
     errors: [],
     createdAt: Date.now(),
     currentGeneration: 0,
-    userInterjections: [],
     observerPrompt: args.observerPrompt,
   }
 
@@ -67,14 +66,6 @@ export async function startNewRoundtable(
           type: "text",
           text: `⚙ Roundtable started — #${sessionID} • ${agents.join(" → ")} • ${args.rounds} round(s)`,
         }],
-      },
-    })
-
-    await ctx.client.session.prompt({
-      path: { id: sessionID },
-      body: {
-        noReply: true,
-        parts: [{ type: "text", text: `⚙ Parent: #${parentSessionID}` }],
       },
     })
 
@@ -282,17 +273,6 @@ export async function processNextTurn(
 
   const result = await ctx.client.session.messages({ path: { id: state.sessionID } })
   const messages = result.data
-
-  const userMsgs = messages.filter((m: { info: { role: string } }) => m.info.role === "user")
-  for (const msg of userMsgs) {
-    for (const part of msg.parts) {
-      if (part.type === "text") {
-        if (!state.userInterjections.includes(part.text)) {
-          state.userInterjections.push(part.text)
-        }
-      }
-    }
-  }
 
   const assistantMsgs = messages.filter(
     (m: { info: { role: string } }) => m.info.role === "assistant",
@@ -602,7 +582,6 @@ export async function extendRoundtable(
     errors: [...originalState.errors],
     createdAt: Date.now(),
     currentGeneration: 0,
-    userInterjections: [...(originalState.userInterjections ?? [])],
     observerPrompt: args.observerPrompt ?? originalState.observerPrompt,
   }
 

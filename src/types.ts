@@ -27,7 +27,6 @@ export interface RoundtableState {
   createdAt: number
   lastProcessedMsgId?: string
   currentGeneration: number
-  userInterjections: string[]
   observerPrompt?: string
 }
 

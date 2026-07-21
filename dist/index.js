@@ -19,7 +19,7 @@ var DEFAULT_CONFIG = {
   toolOutputPreviewMax: 500,
   defaultObserverPrompt: [
     "You are an impartial roundtable observer.",
-    "Consolidate the debate below into:",
+    "Consolidate the debate above into:",
     "",
     "1. **Executive summary** (2-3 sentences)",
     "2. **Key points** raised by each participant",
@@ -144,7 +144,6 @@ async function loadStateFile(sessionID) {
       errors: parsed.errors ?? [],
       createdAt: parsed.createdAt ?? 0,
       currentGeneration: parsed.currentGeneration ?? 0,
-      userInterjections: parsed.userInterjections ?? [],
       lastProcessedMsgId: parsed.lastProcessedMsgId ?? undefined
     };
   } catch {
@@ -278,24 +277,16 @@ function buildToolSummaries(parts) {
   return summaries;
 }
 function buildConsolidatedSummary(state) {
+  const observerEntry = [...state.history].reverse().find((e) => e.agent === "observer");
+  if (observerEntry) {
+    return observerEntry.response;
+  }
   const lines = [];
-  lines.push("━━━ Roundtable Concluded ━━━");
+  lines.push(`━━━ Roundtable ${state.errors.length > 0 ? "Aborted" : "Concluded"} ━━━`);
   lines.push(`Topic: ${state.prompt}`);
   lines.push(`Participants: ${state.agents.join(", ")}`);
   if (state.errors.length > 0)
     lines.push(`Errors: ${state.errors.join("; ")}`);
-  lines.push("");
-  for (const entry of state.history) {
-    const label = entry.agent === "observer" ? "Observer" : `${entry.agent} (Round ${entry.round + 1})`;
-    lines.push(`── ${label} ──`);
-    lines.push(entry.response);
-    if (entry.toolCalls.length > 0) {
-      lines.push(...entry.toolCalls.map((tc) => `  • ${tc.toolName} → ${tc.outputPreview.slice(0, 80)}`));
-    }
-    if (entry.hasError)
-      lines.push("  ⚠ This response had errors");
-    lines.push("");
-  }
   return lines.join(`
 `);
 }
@@ -311,31 +302,9 @@ async function injectRoundtableDelimiter(ctx, sessionID) {
     body: { noReply: true, parts: [{ type: "text", text: delimiter }] }
   });
 }
-function buildExtendedPrompt(originalPrompt, extendPrompt) {
-  const continuationTriggers = [
-    "debate more",
-    "continue",
-    "dive deeper",
-    "go deeper",
-    "expand on",
-    "elaborate",
-    "further discuss",
-    "keep debating"
-  ];
-  const lower = extendPrompt.toLowerCase().trim();
-  const isContinuation = continuationTriggers.some((trigger) => lower.startsWith(trigger));
-  if (isContinuation) {
-    return `Original topic: ${originalPrompt}
-
-Continuation: ${extendPrompt}`;
-  }
-  return [
-    "Previous discussion history preserved. Original topic was:",
-    `  ${originalPrompt}`,
-    "",
-    `New challenge: ${extendPrompt}`
-  ].join(`
-`);
+function buildExtendedPrompt(_originalPrompt, extendPrompt) {
+  return `Continue for more rounds. Focus on:
+${extendPrompt}`;
 }
 async function navigateToSession(ctx, targetID, _parentID) {
   try {
@@ -383,9 +352,9 @@ async function scanOrphanRoundtables(ctx) {
 function buildAgentPrompt(state, agent) {
   const lines = [];
   const agentList = state.agents.join(" → ");
-  const roundInfo = `Round ${state.currentRound + 1}/${state.totalRounds} | Current agent: ${agent}`;
-  if (state.currentRound === 0 && state.currentAgentIndex === 0) {
-    lines.push(`[System] You are participating in a roundtable debate. Agents (${agentList}) will discuss the topic below in ${state.totalRounds} round(s).`);
+  const roundInfo = `Round ${state.currentRound + 1} of ${state.totalRounds} · Current agent: ${agent}`;
+  if (state.history.length === 0) {
+    lines.push(`[RULES] Roundtable: ${agentList}, ${state.totalRounds} round(s). Topic below.`);
     lines.push(`[Topic] ${state.prompt}`);
     lines.push("");
   }
@@ -393,7 +362,7 @@ function buildAgentPrompt(state, agent) {
   const isLastAgent = state.currentAgentIndex === state.agents.length - 1;
   const isLastRound = state.currentRound === state.totalRounds - 1;
   if (isLastAgent && isLastRound) {
-    lines.push("[System] This is the last prompt — finalize your thoughts");
+    lines.push("[TURN] FINAL — finalize your thoughts");
   }
   return lines.join(`
 `);
@@ -433,7 +402,6 @@ async function startNewRoundtable(ctx, args, toolCtx) {
     errors: [],
     createdAt: Date.now(),
     currentGeneration: 0,
-    userInterjections: [],
     observerPrompt: args.observerPrompt
   };
   states.set(sessionID, state);
@@ -451,13 +419,6 @@ async function startNewRoundtable(ctx, args, toolCtx) {
           type: "text",
           text: `⚙ Roundtable started — #${sessionID} • ${agents.join(" → ")} • ${args.rounds} round(s)`
         }]
-      }
-    });
-    await ctx.client.session.prompt({
-      path: { id: sessionID },
-      body: {
-        noReply: true,
-        parts: [{ type: "text", text: `⚙ Parent: #${parentSessionID}` }]
       }
     });
     await ctx.client.tui.showToast({
@@ -613,16 +574,6 @@ async function processNextTurn(ctx, state) {
     return;
   const result = await ctx.client.session.messages({ path: { id: state.sessionID } });
   const messages = result.data;
-  const userMsgs = messages.filter((m) => m.info.role === "user");
-  for (const msg of userMsgs) {
-    for (const part of msg.parts) {
-      if (part.type === "text") {
-        if (!state.userInterjections.includes(part.text)) {
-          state.userInterjections.push(part.text);
-        }
-      }
-    }
-  }
   const assistantMsgs = messages.filter((m) => m.info.role === "assistant");
   if (assistantMsgs.length === 0)
     return;
@@ -884,7 +835,6 @@ async function extendRoundtable(ctx, args, _toolCtx) {
     errors: [...originalState.errors],
     createdAt: Date.now(),
     currentGeneration: 0,
-    userInterjections: [...originalState.userInterjections ?? []],
     observerPrompt: args.observerPrompt ?? originalState.observerPrompt
   };
   states.set(sessionID, newState);
@@ -1071,5 +1021,5 @@ export {
   RoundtablePlugin
 };
 
-//# debugId=AAA035FAAC2DF56064756E2164756E21
+//# debugId=D2E450353039BBE564756E2164756E21
 //# sourceMappingURL=index.js.map

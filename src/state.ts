@@ -51,7 +51,6 @@ export async function loadStateFile(sessionID: string): Promise<RoundtableState 
       errors: parsed.errors ?? [],
       createdAt: parsed.createdAt ?? 0,
       currentGeneration: parsed.currentGeneration ?? 0,
-      userInterjections: parsed.userInterjections ?? [],
       lastProcessedMsgId: parsed.lastProcessedMsgId ?? undefined,
     }
   } catch {
