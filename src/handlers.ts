@@ -595,7 +595,7 @@ export async function extendRoundtable(
     totalRounds: originalState.totalRounds + args.rounds,
     observer: originalState.observer,
     prompt: extendedPrompt,
-    currentRound: originalState.currentRound,
+    currentRound: originalState.currentRound + 1,
     currentAgentIndex: 0,
     phase: "active",
     history: [...originalState.history],

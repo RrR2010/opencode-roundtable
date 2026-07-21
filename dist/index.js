@@ -877,7 +877,7 @@ async function extendRoundtable(ctx, args, _toolCtx) {
     totalRounds: originalState.totalRounds + args.rounds,
     observer: originalState.observer,
     prompt: extendedPrompt,
-    currentRound: originalState.currentRound,
+    currentRound: originalState.currentRound + 1,
     currentAgentIndex: 0,
     phase: "active",
     history: [...originalState.history],
@@ -1071,5 +1071,5 @@ export {
   RoundtablePlugin
 };
 
-//# debugId=041BE2E24326E32D64756E2164756E21
+//# debugId=96E82B4B75EA7B0264756E2164756E21
 //# sourceMappingURL=index.js.map
