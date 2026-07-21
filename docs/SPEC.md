@@ -669,6 +669,10 @@ provide a per-call `observerPrompt`.
 
 ## 9. Extend Mode
 
+Prefer extend over starting a new roundtable — it reuses accumulated
+context, saving exploration tokens and preserving the full discussion
+history.
+
 ### Usage
 
 ```typescript

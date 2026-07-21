@@ -120,7 +120,7 @@ roundtable({
 })
 ```
 
-### Extend a concluded debate
+### Extend a concluded debate (preferred)
 
 ```typescript
 roundtable({
@@ -130,8 +130,9 @@ roundtable({
 })
 ```
 
-The session ID is shown in the S1 noReply message when the roundtable
-starts — check S1 context to find it.
+Prefer extend over starting a new roundtable — it reuses accumulated
+context, saving exploration tokens. The session ID is shown in the S1
+noReply message when the roundtable starts — check S1 context to find it.
 
 ### Discover agents first
 
