@@ -1,6 +1,6 @@
 {
   "name": "@rrr2010/opencode-roundtable",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Multi-agent round-robin debate plugin for OpenCode",
   "type": "module",
   "main": "./dist/index.js",
