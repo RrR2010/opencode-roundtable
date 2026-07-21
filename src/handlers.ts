@@ -52,6 +52,11 @@ export async function startNewRoundtable(
 
   try {
     await saveStateFile(state)
+
+    if (getConfig().navigation === "auto") {
+      await navigateToSession(ctx, sessionID, parentSessionID)
+    }
+
     await sendToAgent(ctx, state)
 
     await ctx.client.session.prompt({
@@ -72,10 +77,6 @@ export async function startNewRoundtable(
         parts: [{ type: "text", text: `⚙ Parent: #${parentSessionID}` }],
       },
     })
-
-    if (getConfig().navigation === "auto") {
-      await navigateToSession(ctx, sessionID, parentSessionID)
-    }
 
     await ctx.client.tui.showToast({
       body: {
@@ -609,6 +610,10 @@ export async function extendRoundtable(
 
   try {
     await saveStateFile(newState)
+
+    if (getConfig().navigation === "auto") {
+      await navigateToSession(ctx, sessionID, originalState.parentSessionID)
+    }
 
     const agentList = originalState.agents.join(" vs ")
     await ctx.client.session.update({

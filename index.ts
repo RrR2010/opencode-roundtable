@@ -81,8 +81,10 @@ export const RoundtablePlugin: Plugin = async (ctx) => {
             .min(2)
             .describe(
               "Agent names in speaking order (minimum 2). For single-agent tasks, use a regular " +
-              "session — do NOT use roundtable. Choose agents based on their expertise — " +
-              "each brings a different perspective. Example: [\"pm\", \"dev\", \"rv\"]",
+              "session — do NOT use roundtable. Choose agents based on their expertise and " +
+              "think about the logical sequence: who should speak first to set context, " +
+              "who should react next, who should close. " +
+              "Example: [\"pm\", \"dev\", \"rv\"] means pm speaks first, then dev, then rv.",
             ),
           prompt: tool.schema
             .string()
@@ -112,8 +114,9 @@ export const RoundtablePlugin: Plugin = async (ctx) => {
             .optional()
             .describe(
               "Session ID (format: ses_xxxx) from a previous roundtable call to " +
-              "continue a concluded debate. Omit this parameter and pass agents + " +
-              "prompt to start a fresh debate.",
+              "continue a concluded debate. Prefer extend over starting a new " +
+              "roundtable — it reuses accumulated context, saving exploration tokens. " +
+              "Omit this parameter and pass agents + prompt to start a fresh debate.",
             ),
           title: tool.schema
             .string()
@@ -145,6 +148,7 @@ export const RoundtablePlugin: Plugin = async (ctx) => {
               if (args.agents) {
                 return "Error: pass either sessionID (extend) or agents (new), not both"
               }
+              args.rounds = (args.rounds as number) ?? 1
               const sid = await extendRoundtable(ctx, args as unknown as RoundtableArgs, toolCtx)
               if (sid.startsWith("Error:") || sid.startsWith("Invalid")) return sid
               const result = await new Promise<string>((resolve) => pendingResults.set(sid, { resolve }))

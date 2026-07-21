@@ -439,6 +439,9 @@ async function startNewRoundtable(ctx, args, toolCtx) {
   states.set(sessionID, state);
   try {
     await saveStateFile(state);
+    if (getConfig().navigation === "auto") {
+      await navigateToSession(ctx, sessionID, parentSessionID);
+    }
     await sendToAgent(ctx, state);
     await ctx.client.session.prompt({
       path: { id: parentSessionID },
@@ -457,9 +460,6 @@ async function startNewRoundtable(ctx, args, toolCtx) {
         parts: [{ type: "text", text: `⚙ Parent: #${parentSessionID}` }]
       }
     });
-    if (getConfig().navigation === "auto") {
-      await navigateToSession(ctx, sessionID, parentSessionID);
-    }
     await ctx.client.tui.showToast({
       body: {
         message: `Roundtable started in #${sessionID} (${agents.join(" → ")} · ${args.rounds} round(s))`,
@@ -890,6 +890,9 @@ async function extendRoundtable(ctx, args, _toolCtx) {
   states.set(sessionID, newState);
   try {
     await saveStateFile(newState);
+    if (getConfig().navigation === "auto") {
+      await navigateToSession(ctx, sessionID, originalState.parentSessionID);
+    }
     const agentList = originalState.agents.join(" vs ");
     await ctx.client.session.update({
       path: { id: sessionID },
@@ -980,11 +983,11 @@ var RoundtablePlugin = async (ctx) => {
 
 ` + "Multiple rounds: for complex topics, use 2+ rounds and INCLUDE per-round focus " + "instructions IN the prompt itself (e.g., prompt: 'Round 1: list pros. Round 2: " + "list cons. Round 3: propose an implementation plan'). This way all agents see " + "the full agenda. The default is 1 round.",
         args: {
-          agents: tool.schema.array(tool.schema.string()).min(2).describe("Agent names in speaking order (minimum 2). For single-agent tasks, use a regular " + "session — do NOT use roundtable. Choose agents based on their expertise — " + 'each brings a different perspective. Example: ["pm", "dev", "rv"]'),
+          agents: tool.schema.array(tool.schema.string()).min(2).describe("Agent names in speaking order (minimum 2). For single-agent tasks, use a regular " + "session — do NOT use roundtable. Choose agents based on their expertise and " + "think about the logical sequence: who should speak first to set context, " + "who should react next, who should close. " + 'Example: ["pm", "dev", "rv"] means pm speaks first, then dev, then rv.'),
           prompt: tool.schema.string().describe("Topic or challenge for the agents to debate. For multi-round debates, " + "include per-round instructions here (e.g., 'Round 1: pros. Round 2: cons. " + "Round 3: plan.'). All agents will see this and follow the round structure."),
           rounds: tool.schema.number().min(1).max(50).describe("Number of complete rounds (each round = all agents speak once). " + "Default: 1. Max: 50. For complex topics with 2+ rounds, include per-round focus " + "instructions in the prompt parameter so all agents see the agenda."),
           observer: tool.schema.string().optional().describe("Agent name for final consolidation. The observer does not debate — it " + "summarizes after all rounds. Omit to use the built-in observer."),
-          sessionID: tool.schema.string().optional().describe("Session ID (format: ses_xxxx) from a previous roundtable call to " + "continue a concluded debate. Omit this parameter and pass agents + " + "prompt to start a fresh debate."),
+          sessionID: tool.schema.string().optional().describe("Session ID (format: ses_xxxx) from a previous roundtable call to " + "continue a concluded debate. Prefer extend over starting a new " + "roundtable — it reuses accumulated context, saving exploration tokens. " + "Omit this parameter and pass agents + prompt to start a fresh debate."),
           title: tool.schema.string().optional().describe("Custom title for the session (max 200 chars). If omitted, auto-generated " + 'as "(Roundtable) - {first 80 chars of prompt, truncated at word boundary}".'),
           observerPrompt: tool.schema.string().optional().describe("Override the default observer consolidation prompt. Use this to control " + "the format and focus of the final summary — e.g., ask the observer to " + "save a detailed report to file, focus on technical decisions only, " + "output as JSON, extract action items, etc. " + "If omitted, the default observer prompt is used (executive summary).")
         },
@@ -998,6 +1001,7 @@ var RoundtablePlugin = async (ctx) => {
               if (args.agents) {
                 return "Error: pass either sessionID (extend) or agents (new), not both";
               }
+              args.rounds = args.rounds ?? 1;
               const sid2 = await extendRoundtable(ctx, args, toolCtx);
               if (sid2.startsWith("Error:") || sid2.startsWith("Invalid"))
                 return sid2;
@@ -1067,5 +1071,5 @@ export {
   RoundtablePlugin
 };
 
-//# debugId=C8BED17810CFAA4D64756E2164756E21
+//# debugId=041BE2E24326E32D64756E2164756E21
 //# sourceMappingURL=index.js.map
