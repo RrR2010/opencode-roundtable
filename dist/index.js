@@ -384,7 +384,7 @@ function buildAgentPrompt(state, agent) {
   const lines = [];
   const agentList = state.agents.join(" → ");
   const roundInfo = `Round ${state.currentRound + 1}/${state.totalRounds} | Current agent: ${agent}`;
-  if (state.currentAgentIndex === 0) {
+  if (state.currentRound === 0 && state.currentAgentIndex === 0) {
     lines.push(`[System] You are participating in a roundtable debate. Agents (${agentList}) will discuss the topic below in ${state.totalRounds} round(s).`);
     lines.push(`[Topic] ${state.prompt}`);
     lines.push("");
@@ -1071,5 +1071,5 @@ export {
   RoundtablePlugin
 };
 
-//# debugId=025846733B84F6F864756E2164756E21
+//# debugId=AAA035FAAC2DF56064756E2164756E21
 //# sourceMappingURL=index.js.map
