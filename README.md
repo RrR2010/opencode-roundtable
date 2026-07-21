@@ -40,7 +40,7 @@ Then add `"@rrr2010/opencode-roundtable"` to your opencode.json `plugin` array.
 - **Extend mode** — continue a concluded roundtable with more rounds or a new topic
 - **Agent discovery** — `available_agents` tool helps the orchestrator know which agents exist
 - **Active roundtables** — `active_roundtables` tool lists current debates with status
-- **TUI plugin** — badge `[RT]`, `← Back` link, `/roundtables` command
+- **TUI command** — `/roundtables` slash command lists sessions with clickable navigation
 - **Auto-navigate** — optional auto-navigation between sessions on create/conclude
 - **Parallel roundtables** — multiple independent debates can run simultaneously
 - **User intervention** — the human can jump into the debate at any time
@@ -180,11 +180,8 @@ If the file doesn't exist, it's created automatically with defaults.
 
 ### TUI Features
 
-The plugin registers a TUI component that provides:
-
-- **`[RT]` badge** — shown in the sidebar for roundtable sessions
-- **`← Back` link** — clickable link on child sessions, navigates to parent
-- **`/roundtables` command** — slash command opens a dialog with clickable session list
+The plugin registers a `/roundtables` slash command that opens a dialog
+listing all active roundtables with clickable session navigation.
 
 ## Tips
 

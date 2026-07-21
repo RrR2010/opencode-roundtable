@@ -63,7 +63,7 @@ prompt, tools, temperature, color) but shares the same discussion history.
 │  ┌────────────────────────────────────────────────────────────┐  │
 │  │  ROUNDTABLE SESSION (S2) — parentID: S1                    │  │
 │  │                                                            │  │
-│  │  [noReply] ⚙ Parent: #S1                                   │  │
+│  │  [parentID on session create]                                         │  │
 │  │  [agent:PM]  Round 1 — PM responds                         │  │
 │  │  [agent:DEV] Round 1 — DEV responds (sees history)          │  │
 │  │  [agent:RV]  Round 1 — RV responds                          │  │
@@ -231,7 +231,7 @@ PHASE 1 — INITIALIZATION
   5. Plugin sends first prompt to agents[0] via session.prompt({agent})
      (Prompt returns immediately — LLM runs in background)
   6. Plugin injects noReply in S1: ⚙ Roundtable started — #S2 • agents • N round(s)
-  7. Plugin injects noReply in S2: ⚙ Parent: #S1
+  7. Plugin injects [...]
   8. If navigation === "auto", auto-navigate to S2
   9. Plugin shows toast "Roundtable started in #S2"
   10. Tool execute blocks with pending Promise
@@ -773,53 +773,41 @@ Instead of verbose serialization, S1 gets minimal noReply markers:
 
 | Purpose | Marker |
 |---------|--------|
-| Parent reference | `⚙ Parent: #ses_yyy` — compact marker for TUI navigation |
+| Parent reference | Encoded in session metadata (`parentID`) and session title (`↑ #parent`) |
 
 ### TUI Plugin
 
-Registered in `tui.json`, exported at `./tui`, the TUI plugin provides:
+The plugin registers a `/roundtables` slash command that opens a dialog
+listing all active roundtable sessions. Clicking a row navigates to that
+session. Toast notifications are also shown on start, completion, errors,
+and interruptions.
 
 | Feature | Implementation |
 |---------|---------------|
-| **Badge `[RT]`** | `api.slots.register({ sidebar_title })` — shows `[RT]` badge on sessions whose title starts with `⚡` |
-| **← Back link** | `api.slots.register({ sidebar_content })` — shows a clickable `← Back` link on child sessions that navigates to the parent |
-| **`/roundtables` command** | `api.command.register()` — slash command opens a dialog listing all active roundtable sessions. Clicking a session navigates to it |
+| **`/roundtables` command** | `api.command.register()` — slash command opens a dialog listing all active roundtable sessions. Clicking a row navigates to it |
 | **Toast notifications** | `api.client.tui.showToast()` — on start, completion, errors, and interruptions |
 
 ### TUI appearance example
 
 ```
-┌─────────────────────────────────────────────────┐
-│  Main Session (S1)    [sidebar: no RT badge]      │
-├─────────────────────────────────────────────────┤
-│  You: roundtable({agents:[pm,dev], rounds:2})   │
-│                                                  │
-│  Build: ⚙ Roundtable started — #abc123           │
-│         • pm → dev • 2 round(s)                  │
-│                                                  │
-│  [tool returns consolidated summary              │
-│   ━━━ Roundtable Concluded ━━━                   │
-│   Topic: What architecture?                      │
-│   PM: microservices...                           │
-│   DEV: monolith...                               │
-│   Conclusion: modular monolith]                  │
-└─────────────────────────────────────────────────┘
+S1 (orchestrator):
+  You: roundtable({agents:[pm,dev], rounds:2})
+  Build: ⚙ Roundtable started — #abc123
+         • pm → dev • 2 round(s)
+  [tool returns observer summary]
+  
+S2 (roundtable session):
+  [RULES] Roundtable: pm → dev, 2 round(s). Topic below.
+  [Topic] What architecture should we use?
+  Round 1 of 2 · Current agent: pm
+  ── PM's response ──
+  ...
+  Round 2 of 2 · Current agent: dev · FINAL
+  ── DEV's response ──
+  ── Observer consolidation ──
+  {observer's structured summary}
+  ━━━ Roundtable Concluded ━━━
 
-┌─────────────────────────────────────────────────┐
-│  Roundtable Session #abc123    [sidebar: [RT]]    │
-│  ← Back (clickable link)                         │
-├─────────────────────────────────────────────────┤
-│  [noReply] ⚙ Parent: #S1                        │
-│  ── PM ──                                        │
-│  The microservices approach allows...             │
-│  ── DEV ──                                       │
-│  Disagree, the complexity is not justified...    │
-│  ── PM (R2) ──                                   │
-│  OK, but what if we split only the...            │
-│  ── DEV (R2) ──                                  │
-│  That's basically a modular monolith...          │
-│  [noReply] ━━━ Roundtable Concluded ━━━          │
-└─────────────────────────────────────────────────┘
 ```
 
 ### Recommended color config
@@ -855,7 +843,7 @@ opencode-roundtable/
 │   ├── handlers.ts           # All orchestration logic (start, extend, process turns, finalize, errors)
 │   ├── utils.ts              # detectLoop, extractResponse, buildToolSummaries, navigateToSession, etc.
 │   └── tui/
-│       └── tui.tsx           # TUI plugin (badge, sidebar link, /roundtables command)
+│       └── tui.tsx           # TUI plugin (/roundtables command)
 ├── docs/
 │   ├── SPEC.md
 │   ├── IMPLEMENTATION.md
@@ -941,8 +929,6 @@ None external. Only `@opencode-ai/plugin` (peer dependency of OpenCode).
 - [ ] State files persist in `~/.config/opencode/roundtable-states/`
 - [ ] Startup recovery loads state files into memory
 - [ ] Navigation config respects `link`/`auto`/`none` modes
-- [ ] TUI plugin shows `[RT]` badge on roundtable sessions
-- [ ] TUI plugin shows `← Back` link on child sessions
 - [ ] `/roundtables` slash command opens session list dialog
 
 ---
