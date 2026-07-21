@@ -6,7 +6,7 @@ export function buildAgentPrompt(state: RoundtableState, agent: string): string 
   const agentList = state.agents.join(" → ")
   const roundInfo = `Round ${state.currentRound + 1}/${state.totalRounds} | Current agent: ${agent}`
 
-  if (state.currentRound === 0 && state.currentAgentIndex === 0) {
+  if (state.currentAgentIndex === 0) {
     lines.push(`[System] You are participating in a roundtable debate. Agents (${agentList}) will discuss the topic below in ${state.totalRounds} round(s).`)
     lines.push(`[Topic] ${state.prompt}`)
     lines.push("")
