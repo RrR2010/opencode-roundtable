@@ -10,28 +10,41 @@ function currentSessionID(): string | undefined {
   return route.params?.sessionID as string | undefined
 }
 
-function parseParentID(title: string): string | undefined {
-  const m = title.match(/↑ #(\S+)/)
-  return m ? m[1] : undefined
+function loadRTMap(): Record<string, string> {
+  try { return api.kv.get("rt-parents") ?? {} } catch { return {} }
+}
+
+function saveRTMap(map: Record<string, string>) {
+  try { api.kv.set("rt-parents", map) } catch { /* best-effort */ }
 }
 
 async function showRoundtables() {
   try {
     const currentID = currentSessionID()
-    const res = await api.client.session.list()
-    const sessions = res.data ?? []
-    const allRts = sessions.filter((s: { title?: string }) => s.title?.startsWith("⚡"))
+    const rtMap = loadRTMap()
+    const allIds = Object.keys(rtMap)
 
-    if (allRts.length === 0) {
-      api.ui.toast({ message: "No active roundtables", variant: "info" })
+    if (allIds.length === 0) {
+      api.ui.toast({ message: "No roundtables recorded", variant: "info" })
       return
     }
 
-    const rts = currentID
-      ? allRts.filter((s: { title: string }) => parseParentID(s.title) === currentID)
-      : allRts
+    const res = await api.client.session.list()
+    const sessions = (res.data ?? []) as { id: string; title?: string }[]
+    const sessionMap = new Map(sessions.map((s) => [s.id, s]))
 
-    if (rts.length === 0) {
+    const entries: { child: string; title: string; parent: string }[] = []
+    for (const childId of allIds) {
+      const parentId = rtMap[childId]
+      const s = sessionMap.get(childId)
+      if (s) entries.push({ child: childId, title: s.title ?? "", parent: parentId })
+    }
+
+    const visible = currentID
+      ? entries.filter((e) => e.parent === currentID)
+      : entries
+
+    if (visible.length === 0) {
       api.ui.toast({ message: "No roundtables from this session", variant: "info" })
       return
     }
@@ -39,13 +52,13 @@ async function showRoundtables() {
     api.ui.dialog.replace(() => (
       <box padding={1} flexDirection="column">
         <text bold>Roundtables {currentID ? "(this session)" : "(all)"}</text>
-        {rts.map((s: { id: string; title: string }) => (
+        {visible.map((e) => (
           <box
             flexDirection="row"
             paddingTop={1}
             onMouseUp={() => {
               api.ui.dialog.clear()
-              api.route.navigate("session", { sessionID: s.id })
+              api.route.navigate("session", { sessionID: e.child })
             }}
           >
             <box
@@ -56,7 +69,7 @@ async function showRoundtables() {
               <text>→</text>
             </box>
             <box paddingLeft={1}>
-              <text>{s.title.replace(/^⚡ /, "")}</text>
+              <text>{e.title.replace(/^⚡|\(Roundtable\) - /, "").slice(0, 80)}</text>
             </box>
           </box>
         ))}
@@ -69,6 +82,17 @@ async function showRoundtables() {
 
 const tui: TuiPluginModule["tui"] = async (a) => {
   api = a
+
+  // Listen for session.created events to build parent-child registry
+  api.event.on("session.created", (event: any) => {
+    const info = event?.properties?.info
+    if (!info?.id) return
+    const title = (info.title ?? "") as string
+    if (!title.startsWith("(Roundtable)") && !title.startsWith("⚡")) return
+    const map = loadRTMap()
+    map[info.id] = info.parentID ?? info.parent_session_id ?? ""
+    saveRTMap(map)
+  })
 
   api.command?.register(() => [
     {

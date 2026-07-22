@@ -55,7 +55,7 @@ prompt, tools, temperature, color) but shares the same discussion history.
 ┌──────────────────────────────────────────────────────────────────┐
 │  MAIN SESSION (S1)                                                │
 │  ┌────────────────────────────────────────────────────────────┐  │
-│  │  build/plan: roundtable({agents, prompt, rounds, observer?})│  │
+│  │  builder/architect: roundtable({agents, prompt, rounds, observer?})│  │
 │  └────────────────────────────────────────────────────────────┘  │
 │         │                                                        │
 │         │ plugin creates                                         │
@@ -64,9 +64,9 @@ prompt, tools, temperature, color) but shares the same discussion history.
 │  │  ROUNDTABLE SESSION (S2) — parentID: S1                    │  │
 │  │                                                            │  │
 │  │  [parentID on session create]                                         │  │
-│  │  [agent:PM]  Round 1 — PM responds                         │  │
-│  │  [agent:DEV] Round 1 — DEV responds (sees history)          │  │
-│  │  [agent:RV]  Round 1 — RV responds                          │  │
+│  │  [agent:planner]  Round 1 — planner responds               │  │
+│  │  [agent:developer] Round 1 — developer responds (sees history)│  │
+│  │  [agent:reviewer]  Round 1 — reviewer responds              │  │
 │  │  ... N rounds ...                                           │  │
 │  │  [observer]  Consolidated summary                           │  │
 │  │  [noReply] ━━━ Roundtable Concluded ━━━ (delimiter)        │  │
@@ -166,7 +166,7 @@ available_agents()
 **Returns** a formatted list of configured agent names:
 
 ```
-Available agents: pm, dev, rv, plan, build
+Available agents: planner, developer, reviewer, architect, builder
 ```
 
 ### Active roundtables tool
@@ -175,12 +175,12 @@ Available agents: pm, dev, rv, plan, build
 active_roundtables()
 ```
 
-**Returns** a formatted list of active roundtables with clickable session IDs:
+**Returns** a formatted list of active roundtables with text session IDs for programmatic use (NOT clickable links). Only the `/roundtables` TUI command has clickable session navigation.
 
 ```
 Active roundtables:
-- #ses_xxx · pm→dev→rv (R1/2) · debating
-- #ses_yyy · pm→dev (R2/2) · consolidating
+- #ses_xxx · planner→developer→reviewer (R1/2) · debating
+- #ses_yyy · planner→developer (R2/2) · consolidating
 ```
 
 Each entry shows session ID, agents in speaking order, current round, and phase
@@ -204,7 +204,7 @@ a string result:
 Topic: {prompt}
 Participants: {agents}
 
-── PM (Round 1) ──
+── Planner (Round 1) ──
 {response}
   • toolName → {outputPreview}
 ...
@@ -250,7 +250,7 @@ PHASE 2 — DEBATE (repeats for each round)
       c) All rounds complete? → PHASE 3
 
   Session title updates dynamically during debate:
-  ⚡ "prompt..." · pm→dev→rv (R1/2 · ↑ #S1)
+  ⚡ "prompt..." · planner→developer→reviewer (R1/2 · ↑ #S1)
 
 PHASE 3 — OBSERVER
 ──────────────────
@@ -269,7 +269,7 @@ PHASE 4 — FINALIZATION
       "━━━ Roundtable Concluded ━━━
        Messages below this line are not part of the original debate.
        The result was consolidated in the main session."
-  25. Plugin updates S2 title: ⚡ "prompt..." · pm→dev→rv ✓
+  25. Plugin updates S2 title: ⚡ "prompt..." · planner→developer→reviewer ✓
   26. Plugin calls saveStateFile() with final state
   27. If navigation === "auto", auto-navigate back to S1
   28. Plugin shows toast "Roundtable concluded"
@@ -344,7 +344,6 @@ interface RoundtableState {
   // Progress
   currentRound: number        // 0-indexed
   currentAgentIndex: number   // 0-indexed
-  phase: "active" | "observing" | "done" | "aborted"
   currentGeneration: number   // incremented each turn, used for timeout staleness
 
   // Data
@@ -352,8 +351,10 @@ interface RoundtableState {
   errors: string[]
   createdAt: number
   lastProcessedMsgId?: string     // prevents duplicate processing
-  userInterjections: string[]     // user messages typed in S2 during debate
+  observerPrompt?: string         // overrides the default observer prompt
 }
+
+type Phase = "active" | "observing" | "done" | "aborted" | "pending"
 
 interface HistoryEntry {
   agent: string
@@ -416,7 +417,7 @@ Multi-agent discussion — N round(s), speaking order: A → B → C.
 Topic: {prompt}
 
 --- Round N of N — agent's turn ---
-This is the final turn — wrap up your arguments.   (last turn only)
+This is the final turn — wrap up your arguments. (last turn only)
 ```
 
 Key points:
@@ -433,7 +434,7 @@ The accumulated history contains **everything relevant for consolidation**:
 
 - `TextPart.text` — agent's textual response
 - `ToolCallSummary` — tool name + **output preview** (configurable, default 500 characters).
-  If DEV ran `ls src/`, the next agent sees the discovered directory structure.
+  If `developer` ran `ls src/`, the next agent sees the discovered directory structure.
 - Errors and failures are tracked per entry
 
 ### What the plugin does NOT include in history
@@ -447,12 +448,6 @@ History is accumulated server-side in the plugin state. It is NOT currently
 injected into subsequent agent prompts — each agent only sees its current
 turn's context. The full history is used by the observer for consolidation
 and appears in the final summary returned to S1.
-
-### User interjections
-
-When a user types a message in S2 during the debate, the plugin tracks those
-messages in `state.userInterjections[]`. These messages do not break the
-state machine — the round-robin continues after the user's message.
 
 ---
 
@@ -503,7 +498,6 @@ and types something:
   processed after the agent finishes
 - The plugin continues the round-robin — the user's message becomes part
   of the context
-- The plugin tracks interjections in `state.userInterjections[]`
 
 **Behavior**: natural and desired. The user can intervene in the debate.
 
@@ -611,18 +605,8 @@ it to complete before starting another.
 ```
 
 This check runs before any other logic in the `execute` function, making
-it a zero-cost guard that fires immediately.
-
-**Secondary: agent prompt rule**
-
-The `buildAgentPrompt()` function includes an explicit constraint:
-```
-[CONSTRAINT] You must NOT call the "roundtable" tool. Only respond with
-text. No tool calls.
-```
-
-This serves as a soft guard — most LLMs respect the instruction and never
-attempt nesting. The `states.has()` check is the hard runtime guard.
+it a zero-cost guard that fires immediately. There is no secondary prompt-level
+guard — the runtime check is sufficient.
 
 **Why not use `session.get().parentID`?**
 The opencode server API (`session.get()`) does NOT return the `parentID`
@@ -708,10 +692,10 @@ session's default model/provider.
 
 ### Explicit observer (override)
 
-If the orchestrator passes `observer: "rv"`, the plugin:
-1. Builds a similar prompt, but with `Your role: rv. Provide an executive summary...`
-2. Sends via `session.prompt({ agent: "rv" })` on the S2 session
-3. The `rv` agent responds with its own tools and personality
+If the orchestrator passes `observer: "reviewer"`, the plugin:
+1. Builds a similar prompt, but with `Your role: reviewer. Provide an executive summary...`
+2. Sends via `session.prompt({ agent: "reviewer" })` on the S2 session
+3. The `reviewer` agent responds with its own tools and personality
 
 ### Flow
 
@@ -732,7 +716,7 @@ This completely replaces the observer prompt for that debate:
 
 ```
 roundtable({
-  agents: ["pm", "dev", "rv"],
+  agents: ["planner", "developer", "reviewer"],
   prompt: "...",
   observerPrompt: "Output only a single emoji that captures the discussion",
 })
@@ -867,6 +851,35 @@ and interruptions.
 | **`/roundtables` command** | `api.command.register()` — slash command opens a dialog listing all active roundtable sessions. Clicking a row navigates to it |
 | **Toast notifications** | `api.client.tui.showToast()` — on start, completion, errors, and interruptions |
 
+### TUI event-based session registry
+
+The TUI plugin maintains a parent-child session registry using an event-driven
+approach instead of polling. On initialization, it listens for `session.created`
+events:
+
+```
+api.event.on("session.created", (event) => {
+  const info = event?.properties?.info
+  if (!info?.id) return
+  const title = (info.title ?? "") as string
+  if (!title.startsWith("(Roundtable)") && !title.startsWith("⚡")) return
+  // Store parentID mapping in KV store
+  map[info.id] = info.parentID ?? info.parent_session_id ?? ""
+  saveRTMap(map)
+})
+```
+
+**Filtering logic**: Only sessions whose title starts with `(Roundtable)` or `⚡`
+are recorded. This ensures only active roundtable children are tracked, not
+every session on the server.
+
+**KV persistence**: The mapping is stored via `api.kv.get/set` (key `"rt-parents"`),
+surviving TUI restarts. The `/roundtables` dialog reads this map and filters
+entries visible from the current session via parentID matching.
+
+This approach avoids polling `session.list()` and naturally stays in sync
+as sessions are created and navigated during a roundtable's lifecycle.
+
 ### Custom tool rendering (visual feedback)
 
 Inline tool call customization (spinner, clickable title) is **not currently
@@ -890,22 +903,22 @@ by plugins.
 
 ```
 S1 (orchestrator):
-  You: roundtable({agents:[pm,dev], rounds:2})
-  Build: ⚙ Roundtable started — #abc123
-         • pm → dev • 2 round(s)
+  You: roundtable({agents:[planner,developer], rounds:2})
+  Builder: ⚙ Roundtable started — #abc123
+          • planner → developer • 2 round(s)
   [tool returns observer summary]
   
 S2 (roundtable session):
-  Multi-agent discussion — 2 round(s), speaking order: pm → dev.
+  Multi-agent discussion — 2 round(s), speaking order: planner → developer.
 
   Topic: What architecture should we use?
 
-  --- Round 1 of 2 — pm's turn ---
-  ── PM's response ──
+  --- Round 1 of 2 — planner's turn ---
+  ── Planner's response ──
   ...
-  --- Round 2 of 2 — dev's turn ---
-  This is the final turn — wrap up your arguments.
-  ── DEV's response ──
+  --- Round 2 of 2 — developer's turn ---
+  This is the final turn — wrap up your arguments. (last turn only)
+  ── Developer's response ──
   ── Observer consolidation ──
   {observer's structured summary}
   ━━━ Roundtable Concluded ━━━
@@ -987,7 +1000,7 @@ None external. Only `@opencode-ai/plugin` (peer dependency of OpenCode).
 ### Test scenarios
 
 1. **Basic roundtable**: 2 agents, 1 round, default observer
-2. **Explicit observer**: 3 agents, 2 rounds, observer="rv" consolidates
+2. **Explicit observer**: 3 agents, 2 rounds, observer="reviewer" consolidates
 3. **Default observer**: same scenario, no observer param → uses built-in
 4. **Agent failure**: provider error → skip → continue
 5. **Timeout**: agent takes too long → abort + skip
@@ -1050,7 +1063,7 @@ None external. Only `@opencode-ai/plugin` (peer dependency of OpenCode).
 | **Observer** | Agent that does not debate, only summarizes |
 | **Orchestrator** | Agent that called `roundtable()` |
 | **History** | Accumulated discussion entries (text + tool summaries) |
-| **Phase** | Current roundtable state (`active`, `observing`, `done`, `aborted`) |
+| **Phase** | Current roundtable state (`active`, `observing`, `done`, `aborted`, `pending`) |
 | **Extend** | Continue a concluded roundtable with more rounds |
 | **noReply** | Injected message that does not trigger an AI response |
 | **ToolCallSummary** | Record of a tool used by an agent: name + output preview (500 chars) |

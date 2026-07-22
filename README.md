@@ -35,7 +35,7 @@ Then add `"@rrr2010/opencode-roundtable"` to your opencode.json `plugin` array.
 - **Round-robin debate** — agents speak in sequence, each seeing the full discussion history
 - **Shared context** — tool outputs and discoveries are visible to all participants
 - **Built-in observer** — automatically consolidates the debate into an executive summary (overridable with a specific agent)
-- **Isolated session** — the debate runs in a child session, keeping the main session clean
+- **Isolated session** — the debate runs in a child session (like \`task\` tool), keeping the main session clean
 - **File persistence** — state stored on disk, survives restarts
 - **Extend mode** — continue a concluded roundtable with more rounds or a new topic
 - **Agent discovery** — `available_agents` tool helps the orchestrator know which agents exist
@@ -43,7 +43,6 @@ Then add `"@rrr2010/opencode-roundtable"` to your opencode.json `plugin` array.
 - **TUI command** — `/roundtables` slash command lists sessions with clickable navigation
 - **Auto-navigate** — optional auto-navigation between sessions on create/conclude
 - **Parallel roundtables** — multiple independent debates can run simultaneously
-- **User intervention** — the human can jump into the debate at any time
 - **Loop detection** — Jaccard bigram similarity detects agent impasses early
 
 ## Tool API
@@ -73,7 +72,7 @@ the debate (role-setting, topic, turn routing, and lifecycle signals).
 available_agents()
 ```
 
-**Returns:** `"Available agents: pm, dev, rv, ..."` — a formatted string of agent names.
+**Returns:** `"Available agents: planner, developer, reviewer, ..."` — a formatted string of agent names.
 
 ### `active_roundtables()`
 
@@ -81,11 +80,11 @@ available_agents()
 active_roundtables()
 ```
 
-**Returns:** clickable session listings with status, e.g.:
+**Returns:** session IDs for agents to use programmatically (NOT clickable links). Only the `/roundtables` TUI command has clickable session navigation. Example:
 ```
 Active roundtables:
-- #ses_xxx · pm→dev→rv (R1/2) · debating
-- #ses_yyy · pm→dev (R2/2) · consolidating
+- #ses_xxx · planner→developer→reviewer (R1/2) · debating
+- #ses_yyy · planner→developer (R2/2) · consolidating
 ```
 
 ## Usage Examples
@@ -94,7 +93,7 @@ Active roundtables:
 
 ```typescript
 roundtable({
-  agents: ["pm", "dev"],
+  agents: ["planner", "developer"],
   prompt: "What architecture should we use?",
 })
 ```
@@ -103,7 +102,7 @@ roundtable({
 
 ```typescript
 roundtable({
-  agents: ["pm", "dev"],
+  agents: ["planner", "developer"],
   prompt: "Round 1: list pros. Round 2: list cons. Round 3: propose an implementation plan.",
   rounds: 3,
 })
@@ -113,10 +112,10 @@ roundtable({
 
 ```typescript
 roundtable({
-  agents: ["pm", "dev"],
+  agents: ["planner", "developer"],
   prompt: "Should we migrate to microservices?",
   rounds: 2,
-  observer: "rv",
+  observer: "reviewer",
 })
 ```
 
@@ -134,13 +133,25 @@ Prefer extend over starting a new roundtable — it reuses accumulated
 context, saving exploration tokens. The session ID is shown in the S1
 noReply message when the roundtable starts — check S1 context to find it.
 
+### Explicit per-agent per-round instructions
+
+When you need each agent to focus on a specific aspect, reference them by name in the prompt:
+
+```typescript
+roundtable({
+  agents: ["planner", "developer", "reviewer"],
+  rounds: 2,
+  prompt: "Round 1 - planner: propose architecture. Round 2 - developer: implement plan. Round 2 - reviewer: review code.",
+})
+```
+
 ### Discover agents first
 
 ```typescript
 const agents = available_agents()
-// agents => "Available agents: pm, dev, rv, build, plan"
+// agents => "Available agents: planner, developer, reviewer, builder, architect"
 roundtable({
-  agents: ["pm", "dev"],
+  agents: ["planner", "developer"],
   prompt: "...",
 })
 ```
@@ -149,7 +160,7 @@ roundtable({
 
 ```typescript
 const active = active_roundtables()
-// active => "Active roundtables:\n- #ses_xxx · pm→dev (R1/2) · debating"
+// active => "Active roundtables:\n- #ses_xxx · planner→developer (R1/2) · debating"
 ```
 
 ## Configuration
@@ -168,6 +179,8 @@ Place `~/.config/opencode/roundtable.json` to override defaults:
 }
 ```
 
+The JSON schema is available at [docs/roundtable.schema.json](https://raw.githubusercontent.com/opencode-ai/roundtable/main/docs/roundtable.schema.json).
+
 If the file doesn't exist, it's created automatically with defaults.
 
 ### Navigation modes
@@ -185,18 +198,6 @@ listing all active roundtables with clickable session navigation.
 
 ## Tips
 
-### Agent selection
-
-Choose agents whose expertise matches the topic:
-
-| Agent | Best for |
-|-------|----------|
-| `pm` | Product decisions, strategy, trade-offs |
-| `dev` | Technical complexity, implementation effort |
-| `rv` | Code review, docs quality, inconsistency detection |
-| `plan` | Architecture planning, scope definition |
-| `build` | Implementation details, execution |
-
 ### Multi-round strategy
 
 For complex topics, structure rounds progressively:
@@ -207,26 +208,16 @@ For complex topics, structure rounds progressively:
 
 Include all round instructions in the `prompt` parameter — all agents see the full agenda.
 
+### Nested roundtables
+
+Recursive roundtables (an agent inside S2 calling `roundtable()` again) are prevented by a runtime guard. The plugin detects if the current session is already a roundtable and rejects the call with an error message. This ensures debates stay linear and predictable.
+
 ### Extend mode
 
 - Use the session ID from the S1 noReply message when the roundtable starts
 - Original topic is preserved; new prompt becomes the continuation
 - Agents must be the same as the original debate (validated)
 - Continue an extend for iterative refinement
-
-## Agent colors (recommended)
-
-```json
-{
-  "agent": {
-    "pm":   { "color": "#3498db" },
-    "dev":  { "color": "#2ecc71" },
-    "rv":   { "color": "#e74c3c" },
-    "plan": { "color": "#f39c12" },
-    "build": { "color": "#9b59b6" }
-  }
-}
-```
 
 ## Documentation
 
