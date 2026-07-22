@@ -965,8 +965,6 @@ None external. Only `@opencode-ai/plugin` (peer dependency of OpenCode).
 | `event` | Listens to `session.idle`, `session.error`, `session.deleted` |
 | `experimental.session.compacting` | Placeholder for state preservation during compaction |
 | `tool` | Defines the `roundtable`, `available_agents`, and `active_roundtables` tools |
-| `config` | Modifies tool permissions and registers `/dcp-compress` command (if applicable) |
-| `experimental.chat.system.transform` | Injects system prompt with roundtable instructions |
 
 ### SDK APIs used
 
