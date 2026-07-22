@@ -867,28 +867,22 @@ and interruptions.
 
 ### Custom tool rendering (visual feedback)
 
-The plugin registers a custom renderer for the `roundtable` tool via
-`registerTool()` from `@opencode-ai/session-ui/message-part`. This
-changes the tool call appearance in the conversation:
+Inline tool call customization (spinner, clickable title) is **not currently
+possible** via the official plugin API. The opencode session-ui package
+(`@opencode-ai/session-ui`) contains `registerTool()` and `BasicTool`
+but they are not exposed through the plugin SDK and are not importable
+by plugins.
 
-| State | Display |
-|-------|---------|
-| **Running** | `● Roundtable — dev → pm · R1` (with shimmer) |
-| **Completed** | `Roundtable concluído` (clickable, navigates to S2) |
-
-The custom renderer uses `BasicTool` from `@opencode-ai/session-ui/basic-tool`
-and reads `props.metadata.sessionId` (set via `toolCtx.metadata()` during
-execution) to create a clickable link to the child session.
-
-**Caveat:** `@opencode-ai/session-ui` is an internal opencode package and
-not officially part of the plugin SDK. The import resolves at runtime
-because opencode's own dependency tree includes it, but there are no TypeScript
-types exported for plugin use.
-
-In addition, the plugin uses `api.slots.register()` to inject UI elements
-into the TUI sidebar:
-- `sidebar_title` — adds a "RT" badge next to roundtable session titles
-- `sidebar_content` — adds a "← Parent session" link for navigation
+**What works:**
+- **Toast notifications** on start, turn changes, and completion (via
+  `ctx.client.tui.showToast()`)
+- **`/roundtables` command** — lists all active roundtables; clicking a
+  row navigates to the session
+- **Native parent-child navigation** — opencode's TUI natively supports
+  `ctrl+up`/`ctrl+down` to navigate between parent and child sessions
+- **`toolCtx.metadata()`** — the execute function sets `{ sessionId: sid }`
+  on the tool part metadata, which may be used by future or third-party
+  tool renderers
 
 ### TUI appearance example
 
