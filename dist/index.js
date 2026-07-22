@@ -352,19 +352,15 @@ async function scanOrphanRoundtables(ctx) {
 // src/prompts.ts
 function buildAgentPrompt(state, agent) {
   const lines = [];
-  const agentList = state.agents.join(" → ");
-  const roundInfo = `Round ${state.currentRound + 1} of ${state.totalRounds} · Current agent: ${agent}`;
+  const orderStr = state.agents.join(" → ");
   if (state.history.length === 0) {
-    lines.push(`[RULES] Roundtable: ${agentList}, ${state.totalRounds} round(s). Topic below.`);
-    lines.push(`[CONSTRAINT] You must NOT call the "roundtable" tool. Only respond with text. No tool calls.`);
-    lines.push(`[Topic] ${state.prompt}`);
-    lines.push("");
+    lines.push(`Multi-agent discussion — ${state.totalRounds} round(s), ` + `speaking order: ${orderStr}.`, ``, `Topic: ${state.prompt}`, ``);
   }
-  lines.push(roundInfo);
+  lines.push(`--- Round ${state.currentRound + 1} of ${state.totalRounds} — ${agent}'s turn ---`);
   const isLastAgent = state.currentAgentIndex === state.agents.length - 1;
   const isLastRound = state.currentRound === state.totalRounds - 1;
   if (isLastAgent && isLastRound) {
-    lines.push("[TURN] FINAL — finalize your thoughts");
+    lines.push("This is the final turn — wrap up your arguments.");
   }
   return lines.join(`
 `);
@@ -1023,5 +1019,5 @@ export {
   RoundtablePlugin
 };
 
-//# debugId=0B7A6A004DA0A8AC64756E2164756E21
+//# debugId=490C10E9825E89F864756E2164756E21
 //# sourceMappingURL=index.js.map
