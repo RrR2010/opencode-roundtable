@@ -408,22 +408,24 @@ const pendingResults = new Map<string, { resolve: (output: string) => void }>()
 ### Content sent to each agent
 
 Each time the plugin passes the turn (via `buildAgentPrompt`), it sends a
-minimal message with:
+fluent message with:
 
 ```
-[System] You are participating in a roundtable debate. Agents (A → B → C) will discuss the topic below in N round(s).
-[Topic] {prompt}
+Multi-agent discussion — N round(s), speaking order: A → B → C.
 
-Round N/M | Current agent: Z
+Topic: {prompt}
 
-[System] This is the last prompt — finalize your thoughts   (last round only)
+--- Round N of N — agent's turn ---
+This is the final turn — wrap up your arguments.   (last turn only)
 ```
 
 Key points:
-- No `[ROUNDTABLE META]` block is injected (state is file-based)
-- Agents are NOT instructed to ignore META blocks
-- The initial system message is only included on the first turn
-- The "finalize your thoughts" hint is added on the last turn
+- No `[RULES]`/`[CONSTRAINT]`/`[Topic]` tags — the prompt reads naturally
+- Nested roundtable prevention is handled at the tool level (`states.has()`),
+  not via prompt text
+- The first turn includes the full context; subsequent turns only get the
+  round header
+- The "final turn" hint is added on the last agent of the last round
 
 ### What the plugin includes in history
 
@@ -894,12 +896,15 @@ S1 (orchestrator):
   [tool returns observer summary]
   
 S2 (roundtable session):
-  [RULES] Roundtable: pm → dev, 2 round(s). Topic below.
-  [Topic] What architecture should we use?
-  Round 1 of 2 · Current agent: pm
+  Multi-agent discussion — 2 round(s), speaking order: pm → dev.
+
+  Topic: What architecture should we use?
+
+  --- Round 1 of 2 — pm's turn ---
   ── PM's response ──
   ...
-  Round 2 of 2 · Current agent: dev · FINAL
+  --- Round 2 of 2 — dev's turn ---
+  This is the final turn — wrap up your arguments.
   ── DEV's response ──
   ── Observer consolidation ──
   {observer's structured summary}
@@ -1016,7 +1021,7 @@ None external. Only `@opencode-ai/plugin` (peer dependency of OpenCode).
 ### Acceptance criteria
 
 - [ ] Nested roundtables are blocked with error "Cannot nest roundtables..."
-- [ ] Nested guard also works via `[CONSTRAINT]` in agent prompts
+- [ ] Nested guard enforced at tool level (not via prompt text)
 - [ ] Removing `.optional()`/`.default()` from Zod schemas prevents `mo.output` crash
 - [ ] Dev sync script copies build to both `@latest` and versioned cache dirs
 - [ ] `roundtable` tool appears in the agent's tool list
