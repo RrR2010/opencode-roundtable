@@ -912,19 +912,7 @@ S2 (roundtable session):
 
 ```
 
-### Recommended color config
 
-```json
-{
-  "agent": {
-    "pm":   { "color": "#3498db" },
-    "dev":  { "color": "#2ecc71" },
-    "rv":   { "color": "#e74c3c" },
-    "plan": { "color": "#f39c12" },
-    "build": { "color": "#9b59b6" }
-  }
-}
-```
 
 ---
 
