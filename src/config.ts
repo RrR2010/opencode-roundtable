@@ -13,7 +13,7 @@ const configDir = (() => {
 const configPath = join(configDir, "roundtable.json")
 
 const configSchemaUrl =
-  "https://raw.githubusercontent.com/opencode-ai/roundtable/main/docs/roundtable.schema.json"
+  "https://raw.githubusercontent.com/RrR2010/opencode-roundtable/refs/heads/master/docs/roundtable.schema.json"
 
 const DEFAULT_CONFIG: PluginConfig = {
   defaultTimeoutMs: 300_000,

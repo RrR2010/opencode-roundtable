@@ -12,7 +12,7 @@ var configDir = (() => {
   return join(os.homedir(), ".config", "opencode");
 })();
 var configPath = join(configDir, "roundtable.json");
-var configSchemaUrl = "https://raw.githubusercontent.com/opencode-ai/roundtable/main/docs/roundtable.schema.json";
+var configSchemaUrl = "https://raw.githubusercontent.com/RrR2010/opencode-roundtable/refs/heads/master/docs/roundtable.schema.json";
 var DEFAULT_CONFIG = {
   defaultTimeoutMs: 300000,
   loopSimilarityThreshold: 0.85,
@@ -1019,5 +1019,5 @@ export {
   RoundtablePlugin
 };
 
-//# debugId=490C10E9825E89F864756E2164756E21
+//# debugId=78271419B44F611C64756E2164756E21
 //# sourceMappingURL=index.js.map

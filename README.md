@@ -22,7 +22,7 @@ OpenCode auto-installs npm plugins on startup. No manual copy needed.
 ### Local (dev)
 
 ```bash
-git clone https://github.com/opencode-ai/roundtable
+git clone https://github.com/RrR2010/opencode-roundtable
 cd roundtable
 bun run build
 npm link
@@ -169,7 +169,7 @@ Place `~/.config/opencode/roundtable.json` to override defaults:
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/opencode-ai/roundtable/main/docs/roundtable.schema.json",
+  "$schema": "https://raw.githubusercontent.com/RrR2010/opencode-roundtable/refs/heads/master/docs/roundtable.schema.json",
   "defaultTimeoutMs": 300000,
   "loopSimilarityThreshold": 0.85,
   "toolOutputPreviewMax": 500,
@@ -179,7 +179,7 @@ Place `~/.config/opencode/roundtable.json` to override defaults:
 }
 ```
 
-The JSON schema is available at [docs/roundtable.schema.json](https://raw.githubusercontent.com/opencode-ai/roundtable/main/docs/roundtable.schema.json).
+The JSON schema is available at [docs/roundtable.schema.json](https://raw.githubusercontent.com/RrR2010/opencode-roundtable/refs/heads/master/docs/roundtable.schema.json).
 
 If the file doesn't exist, it's created automatically with defaults.
 

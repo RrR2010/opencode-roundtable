@@ -42,11 +42,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/opencode-ai/roundtable.git"
+    "url": "git+https://github.com/RrR2010/opencode-roundtable.git"
   },
-  "homepage": "https://github.com/opencode-ai/roundtable#readme",
+  "homepage": "https://github.com/RrR2010/opencode-roundtable#readme",
   "bugs": {
-    "url": "https://github.com/opencode-ai/roundtable/issues"
+    "url": "https://github.com/RrR2010/opencode-roundtable/issues"
   },
   "peerDependencies": {
     "@opencode-ai/plugin": "latest",
