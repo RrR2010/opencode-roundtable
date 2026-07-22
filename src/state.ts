@@ -14,6 +14,7 @@ export const timeoutHandles = new Map<string, ReturnType<typeof setTimeout>>()
 export const pendingResults = new Map<string, {
   resolve: (output: string) => void
 }>()
+export const roundtableLocks = new Set<string>()
 
 function stateFilePath(sessionID: string): string {
   return join(statesDir, `${sessionID}.json`)

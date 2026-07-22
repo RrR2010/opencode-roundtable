@@ -1,6 +1,6 @@
 import type { PluginInput } from "@opencode-ai/plugin"
 import type { RoundtableArgs, RoundtableState, HistoryEntry, Event as RoundtableEvent } from "./types"
-import { states, timeoutHandles, pendingResults, saveStateFile, loadStateFile, deleteStateFile } from "./state"
+import { states, timeoutHandles, pendingResults, roundtableLocks, saveStateFile, loadStateFile, deleteStateFile } from "./state"
 import { getConfig } from "./config"
 import { buildAgentPrompt, buildObserverPrompt } from "./prompts"
 import {
@@ -26,9 +26,9 @@ export async function startNewRoundtable(
       parentID: toolCtx.sessionID,
     },
   })
-
   const sessionID = newSession.data.id
   const parentSessionID = toolCtx.sessionID
+  roundtableLocks.add(sessionID)
 
   const state: RoundtableState = {
     sessionID,
@@ -79,6 +79,7 @@ export async function startNewRoundtable(
     return sessionID
   } catch (err) {
     states.delete(sessionID)
+    roundtableLocks.delete(sessionID)
     throw err
   }
 }
@@ -94,12 +95,10 @@ export async function sendToAgent(
   try {
     const agent = state.agents[state.currentAgentIndex]
     const prompt = buildAgentPrompt(state, agent)
-
     await ctx.client.session.prompt({
       path: { id: state.sessionID },
       body: { agent, parts: [{ type: "text", text: prompt }] },
     })
-
     state.currentGeneration++
     const capturedGeneration = state.currentGeneration
 
@@ -248,6 +247,7 @@ export async function finalizeRoundtable(
     } catch { /* best-effort */ }
   } finally {
     states.delete(sessionID)
+    roundtableLocks.delete(sessionID)
     try {
       await ctx.client.app.log({
         body: {

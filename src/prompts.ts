@@ -8,6 +8,7 @@ export function buildAgentPrompt(state: RoundtableState, agent: string): string 
 
   if (state.history.length === 0) {
     lines.push(`[RULES] Roundtable: ${agentList}, ${state.totalRounds} round(s). Topic below.`)
+    lines.push(`[CONSTRAINT] You must NOT call the "roundtable" tool. Only respond with text. No tool calls.`)
     lines.push(`[Topic] ${state.prompt}`)
     lines.push("")
   }

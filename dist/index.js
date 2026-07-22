@@ -104,6 +104,7 @@ var statesDir = (() => {
 var states = new Map;
 var timeoutHandles = new Map;
 var pendingResults = new Map;
+var roundtableLocks = new Set;
 function stateFilePath(sessionID) {
   return join2(statesDir, `${sessionID}.json`);
 }
@@ -253,7 +254,7 @@ function buildToolSummary(part) {
   let outputPreview;
   switch (state.status) {
     case "completed":
-      outputPreview = state.output.slice(0, getConfig().toolOutputPreviewMax);
+      outputPreview = (state.output ?? "(empty)").slice(0, getConfig().toolOutputPreviewMax);
       break;
     case "error":
       outputPreview = (state.output ?? "(unknown error)").slice(0, getConfig().toolOutputPreviewMax);
@@ -355,6 +356,7 @@ function buildAgentPrompt(state, agent) {
   const roundInfo = `Round ${state.currentRound + 1} of ${state.totalRounds} · Current agent: ${agent}`;
   if (state.history.length === 0) {
     lines.push(`[RULES] Roundtable: ${agentList}, ${state.totalRounds} round(s). Topic below.`);
+    lines.push(`[CONSTRAINT] You must NOT call the "roundtable" tool. Only respond with text. No tool calls.`);
     lines.push(`[Topic] ${state.prompt}`);
     lines.push("");
   }
@@ -388,6 +390,7 @@ async function startNewRoundtable(ctx, args, toolCtx) {
   });
   const sessionID = newSession.data.id;
   const parentSessionID = toolCtx.sessionID;
+  roundtableLocks.add(sessionID);
   const state = {
     sessionID,
     parentSessionID,
@@ -430,6 +433,7 @@ async function startNewRoundtable(ctx, args, toolCtx) {
     return sessionID;
   } catch (err) {
     states.delete(sessionID);
+    roundtableLocks.delete(sessionID);
     throw err;
   }
 }
@@ -557,6 +561,7 @@ async function finalizeRoundtable(ctx, state) {
     } catch {}
   } finally {
     states.delete(sessionID);
+    roundtableLocks.delete(sessionID);
     try {
       await ctx.client.app.log({
         body: {
@@ -875,6 +880,11 @@ async function extendRoundtable(ctx, args, _toolCtx) {
 // index.ts
 var RoundtablePlugin = async (ctx) => {
   try {
+    await ctx.client.app.log({
+      body: { service: "roundtable", level: "debug", message: "PLUGIN_LOADED" }
+    });
+  } catch {}
+  try {
     await loadConfig(ctx);
   } catch {}
   try {
@@ -936,25 +946,24 @@ var RoundtablePlugin = async (ctx) => {
           agents: tool.schema.array(tool.schema.string()).min(2).describe("Agent names in speaking order (minimum 2). For single-agent tasks, use a regular " + "session — do NOT use roundtable. Choose agents based on their expertise and " + "think about the logical sequence: who should speak first to set context, " + "who should react next, who should close. " + 'Example: ["pm", "dev", "rv"] means pm speaks first, then dev, then rv.'),
           prompt: tool.schema.string().describe("Topic or challenge for the agents to debate. For multi-round debates, " + "include per-round instructions here (e.g., 'Round 1: pros. Round 2: cons. " + "Round 3: plan.'). All agents will see this and follow the round structure."),
           rounds: tool.schema.number().min(1).max(50).describe("Number of complete rounds (each round = all agents speak once). " + "Default: 1. Max: 50. For complex topics with 2+ rounds, include per-round focus " + "instructions in the prompt parameter so all agents see the agenda."),
-          observer: tool.schema.string().optional().describe("Agent name for final consolidation. The observer does not debate — it " + "summarizes after all rounds. Omit to use the built-in observer."),
-          sessionID: tool.schema.string().optional().describe("Session ID (format: ses_xxxx) from a previous roundtable call to " + "continue a concluded debate. Prefer extend over starting a new " + "roundtable — it reuses accumulated context, saving exploration tokens. " + "Omit this parameter and pass agents + prompt to start a fresh debate."),
-          title: tool.schema.string().optional().describe("Custom title for the session (max 200 chars). If omitted, auto-generated " + 'as "(Roundtable) - {first 80 chars of prompt, truncated at word boundary}".'),
-          observerPrompt: tool.schema.string().optional().describe("Override the default observer consolidation prompt. Use this to control " + "the format and focus of the final summary — e.g., ask the observer to " + "save a detailed report to file, focus on technical decisions only, " + "output as JSON, extract action items, etc. " + "If omitted, the default observer prompt is used (executive summary).")
+          observer: tool.schema.string().describe("Agent name for final consolidation. The observer does not debate — it " + "summarizes after all rounds. Omit to use the built-in observer."),
+          sessionID: tool.schema.string().describe("Session ID (format: ses_xxxx) from a previous roundtable call to " + "continue a concluded debate. Prefer extend over starting a new " + "roundtable — it reuses accumulated context, saving exploration tokens. " + "Omit this parameter and pass agents + prompt to start a fresh debate."),
+          title: tool.schema.string().describe("Custom title for the session (max 200 chars). If omitted, auto-generated " + 'as "(Roundtable) - {first 80 chars of prompt, truncated at word boundary}".'),
+          observerPrompt: tool.schema.string().describe("Override the default observer consolidation prompt. Use this to control " + "the format and focus of the final summary — e.g., ask the observer to " + "save a detailed report to file, focus on technical decisions only, " + "output as JSON, extract action items, etc. " + "If omitted, the default observer prompt is used (executive summary).")
         },
         async execute(args, toolCtx) {
           try {
+            if (states.has(toolCtx.sessionID)) {
+              return `Cannot nest roundtables. You are already inside roundtable #${toolCtx.sessionID}. Wait for it to complete before starting another.`;
+            }
             const rounds = args.rounds ?? 1;
-            if (args.sessionID) {
-              if (typeof args.sessionID !== "string" || !args.sessionID.trim()) {
-                return "Error: sessionID is empty";
-              }
-              if (args.agents) {
-                return "Error: pass either sessionID (extend) or agents (new), not both";
-              }
-              args.rounds = args.rounds ?? 1;
+            if (args.sessionID && typeof args.sessionID === "string" && args.sessionID.trim()) {
+              if (args.agents)
+                return "Error: pass either sessionID or agents, not both";
               const sid2 = await extendRoundtable(ctx, args, toolCtx);
               if (sid2.startsWith("Error:") || sid2.startsWith("Invalid"))
                 return sid2;
+              toolCtx.metadata({ title: "Roundtable (extended)", metadata: { sessionId: sid2 } });
               const result2 = await new Promise((resolve) => pendingResults.set(sid2, { resolve }));
               return result2;
             }
@@ -963,24 +972,17 @@ var RoundtablePlugin = async (ctx) => {
             }
             const validation = await validateAgents(ctx, args.agents);
             if (!validation.valid) {
-              const available = validation.available.map((a) => a.name).join(", ");
-              return ["Invalid agent configuration:", ...validation.errors.map((e) => `  - ${e}`), `Available agents: ${available}`].join(`
+              const avail = validation.available.map((a) => a.name).join(", ");
+              return ["Invalid agent configuration:", ...validation.errors.map((e) => `  - ${e}`), `Available agents: ${avail}`].join(`
 `);
             }
-            if (rounds > 50) {
+            if (rounds > 50)
               return "Error: Maximum 50 rounds allowed";
-            }
             const sid = await startNewRoundtable(ctx, { ...args, rounds }, toolCtx);
+            toolCtx.metadata({ title: `Roundtable: ${args.agents?.join(" → ")}`, metadata: { sessionId: sid } });
             const result = await new Promise((resolve) => pendingResults.set(sid, { resolve }));
             return result;
           } catch (err) {
-            await ctx.client.app.log({
-              body: {
-                service: "roundtable",
-                level: "error",
-                message: `roundtable.execute error: ${err instanceof Error ? err.stack || err.message : String(err)}`
-              }
-            });
             return `Error: ${err instanceof Error ? err.message : String(err)}`;
           }
         }
@@ -1021,5 +1023,5 @@ export {
   RoundtablePlugin
 };
 
-//# debugId=D2E450353039BBE564756E2164756E21
+//# debugId=0B7A6A004DA0A8AC64756E2164756E21
 //# sourceMappingURL=index.js.map

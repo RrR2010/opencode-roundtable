@@ -1,6 +1,6 @@
 {
   "name": "@rrr2010/opencode-roundtable",
-  "version": "0.3.7",
+  "version": "0.3.8",
   "description": "Multi-agent round-robin debate plugin for OpenCode",
   "type": "module",
   "main": "./dist/index.js",
@@ -29,7 +29,8 @@
     "build": "bun build index.ts --outdir dist --target node --format esm --sourcemap --external @opencode-ai/plugin --external @opencode-ai/sdk",
     "typecheck": "tsc --noEmit",
     "prepublishOnly": "bun run build",
-    "dev:install": "bun run build && npm link"
+    "dev:install": "bun run build && npm link",
+    "dev:sync": "bun run build && for d in \"$HOME/.cache/opencode/packages/@rrr2010/opencode-roundtable\"*; do cp dist/index.js \"$d/node_modules/@rrr2010/opencode-roundtable/dist/index.js\"; cp dist/index.js.map \"$d/node_modules/@rrr2010/opencode-roundtable/dist/index.js.map\"; cp src/tui/tui.tsx \"$d/node_modules/@rrr2010/opencode-roundtable/src/tui/tui.tsx\"; done"
   },
   "keywords": [
     "opencode",

@@ -585,7 +585,85 @@ After `phase = "done"` (roundtable concluded):
 **Behavior**: natural and transparent. S2 becomes a regular session after
 the roundtable concludes.
 
-### 7.11 Error during observer phase
+### 7.11 Nested roundtables (guard)
+
+Nested roundtables occur when an agent inside S2 calls the `roundtable()`
+tool, attempting to create S2.1 (child of S2). This is prevented by two
+mechanisms:
+
+**Primary: in-memory `states` check**
+
+```
+In the tool's execute function:
+  states.has(toolCtx.sessionID)
+```
+
+The `states` Map is populated by `startNewRoundtable()` as soon as S2 is
+created. Since the plugin's module-level variables are shared across the
+event handler and tool execution (within the same Bun process), any tool
+call from inside S2 will find S2 in the `states` Map and be rejected:
+
+```
+Cannot nest roundtables. You are already inside roundtable #S2. Wait for
+it to complete before starting another.
+```
+
+This check runs before any other logic in the `execute` function, making
+it a zero-cost guard that fires immediately.
+
+**Secondary: agent prompt rule**
+
+The `buildAgentPrompt()` function includes an explicit constraint:
+```
+[CONSTRAINT] You must NOT call the "roundtable" tool. Only respond with
+text. No tool calls.
+```
+
+This serves as a soft guard — most LLMs respect the instruction and never
+attempt nesting. The `states.has()` check is the hard runtime guard.
+
+**Why not use `session.get().parentID`?**
+The opencode server API (`session.get()`) does NOT return the `parentID`
+field in its response, even though it is set during session creation.
+Only the `title` field is reliably available via the API. The in-memory
+`states` Map is the correct approach because it lives in the same process
+as the tool execution.
+
+**Note for developers:** When making changes, ensure that:
+1. `states.set(sessionID, state)` is called BEFORE `sendToAgent()` in
+   `startNewRoundtable()`.
+2. `states.delete(sessionID)` is called in `finalizeRoundtable()`.
+3. Both cache directories are updated when syncing builds:
+   `@rrr2010/opencode-roundtable` and `@rrr2010/opencode-roundtable@latest`.
+
+### 7.12 Zod schema bug (`.optional()` / `.default()`)
+
+Tool arguments using `.optional()` or `.default()` on Zod schemas cause
+a runtime error in OpenCode's tool argument processing:
+
+```
+undefined is not an object (evaluating 'mo.output')
+```
+
+**Fix**: Remove all `.optional()` and `.default()` calls from tool arg
+schemas. Handle defaults manually in the `execute()` function using `??`.
+
+```typescript
+// ❌ CAUSES mo.output
+sessionID: tool.schema.string().optional().describe("..."),
+rounds: tool.schema.number().min(1).default(1).describe("..."),
+
+// ✅ WORKS
+sessionID: tool.schema.string().describe("..."),
+rounds: tool.schema.number().min(1).describe("..."),
+```
+
+And inside `execute`:
+```typescript
+const rounds = (args.rounds as number) ?? 1
+```
+
+### 7.13 Error during observer phase
 
 If the observer fails (provider error in `OBSERVING` phase):
 - `handleAgentError` sets `phase = "aborted"`
@@ -787,6 +865,31 @@ and interruptions.
 | **`/roundtables` command** | `api.command.register()` — slash command opens a dialog listing all active roundtable sessions. Clicking a row navigates to it |
 | **Toast notifications** | `api.client.tui.showToast()` — on start, completion, errors, and interruptions |
 
+### Custom tool rendering (visual feedback)
+
+The plugin registers a custom renderer for the `roundtable` tool via
+`registerTool()` from `@opencode-ai/session-ui/message-part`. This
+changes the tool call appearance in the conversation:
+
+| State | Display |
+|-------|---------|
+| **Running** | `● Roundtable — dev → pm · R1` (with shimmer) |
+| **Completed** | `Roundtable concluído` (clickable, navigates to S2) |
+
+The custom renderer uses `BasicTool` from `@opencode-ai/session-ui/basic-tool`
+and reads `props.metadata.sessionId` (set via `toolCtx.metadata()` during
+execution) to create a clickable link to the child session.
+
+**Caveat:** `@opencode-ai/session-ui` is an internal opencode package and
+not officially part of the plugin SDK. The import resolves at runtime
+because opencode's own dependency tree includes it, but there are no TypeScript
+types exported for plugin use.
+
+In addition, the plugin uses `api.slots.register()` to inject UI elements
+into the TUI sidebar:
+- `sidebar_title` — adds a "RT" badge next to roundtable session titles
+- `sidebar_content` — adds a "← Parent session" link for navigation
+
 ### TUI appearance example
 
 ```
@@ -862,6 +965,8 @@ None external. Only `@opencode-ai/plugin` (peer dependency of OpenCode).
 | `event` | Listens to `session.idle`, `session.error`, `session.deleted` |
 | `experimental.session.compacting` | Placeholder for state preservation during compaction |
 | `tool` | Defines the `roundtable`, `available_agents`, and `active_roundtables` tools |
+| `config` | Modifies tool permissions and registers `/dcp-compress` command (if applicable) |
+| `experimental.chat.system.transform` | Injects system prompt with roundtable instructions |
 
 ### SDK APIs used
 
@@ -873,10 +978,22 @@ None external. Only `@opencode-ai/plugin` (peer dependency of OpenCode).
 | `ctx.client.session.abort()` | Abort timed-out agent |
 | `ctx.client.session.update()` | Update session title |
 | `ctx.client.session.get()` | Validate session exists (extend mode) |
+| `ctx.client.session.list()` | Session listing (used by TUI dialog) |
 | `ctx.client.tui.showToast()` | Notify user |
 | `ctx.client.tui.publish()` | Auto-navigate (fallback) |
 | `ctx.client.app.agents()` | Discover available agents |
 | `ctx.client.app.log()` | Debug logging |
+
+### TUI APIs used (via `@opencode-ai/plugin/tui`)
+
+| API | Usage |
+|-----|-------|
+| `api.command.register()` | `/roundtables` slash command |
+| `api.route.navigate()` | Navigate to child/parent sessions |
+| `api.ui.dialog.replace()` | Show roundtable list dialog |
+| `api.ui.toast()` | Notifications |
+| `api.theme.current` | Read theme colors for custom UI |
+| `api.slots.register()` | Sidebar badges and navigation links |
 
 ---
 
@@ -906,6 +1023,10 @@ None external. Only `@opencode-ai/plugin` (peer dependency of OpenCode).
 
 ### Acceptance criteria
 
+- [ ] Nested roundtables are blocked with error "Cannot nest roundtables..."
+- [ ] Nested guard also works via `[CONSTRAINT]` in agent prompts
+- [ ] Removing `.optional()`/`.default()` from Zod schemas prevents `mo.output` crash
+- [ ] Dev sync script copies build to both `@latest` and versioned cache dirs
 - [ ] `roundtable` tool appears in the agent's tool list
 - [ ] `available_agents` tool appears in the agent's tool list
 - [ ] `active_roundtables` tool lists active roundtables

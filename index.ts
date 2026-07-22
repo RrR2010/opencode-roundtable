@@ -1,11 +1,17 @@
-import { type Plugin, type PluginInput, tool } from "@opencode-ai/plugin"
+import { type Plugin, type PluginInput, tool, type ToolContext } from "@opencode-ai/plugin"
 import type { RoundtableArgs, Event as RoundtableEvent } from "./src/types"
 import { loadConfig } from "./src/config"
-import { states, timeoutHandles, pendingResults } from "./src/state"
+import { states, timeoutHandles, pendingResults, roundtableLocks } from "./src/state"
 import { getSessionIdFromEvent, validateAgents, scanOrphanRoundtables } from "./src/utils"
 import { startNewRoundtable, extendRoundtable, processNextTurn, handleAgentError, handleSessionDeleted } from "./src/handlers"
 
 export const RoundtablePlugin: Plugin = async (ctx) => {
+  try {
+    await ctx.client.app.log({
+      body: { service: "roundtable", level: "debug", message: "PLUGIN_LOADED" },
+    })
+  } catch { /* best-effort */ }
+
   try {
     await loadConfig(ctx)
   } catch { /* best-effort */ }
@@ -104,14 +110,12 @@ export const RoundtablePlugin: Plugin = async (ctx) => {
             ),
           observer: tool.schema
             .string()
-            .optional()
             .describe(
               "Agent name for final consolidation. The observer does not debate — it " +
               "summarizes after all rounds. Omit to use the built-in observer.",
             ),
           sessionID: tool.schema
             .string()
-            .optional()
             .describe(
               "Session ID (format: ses_xxxx) from a previous roundtable call to " +
               "continue a concluded debate. Prefer extend over starting a new " +
@@ -120,14 +124,12 @@ export const RoundtablePlugin: Plugin = async (ctx) => {
             ),
           title: tool.schema
             .string()
-            .optional()
             .describe(
               "Custom title for the session (max 200 chars). If omitted, auto-generated " +
               "as \"(Roundtable) - {first 80 chars of prompt, truncated at word boundary}\".",
             ),
           observerPrompt: tool.schema
             .string()
-            .optional()
             .describe(
               "Override the default observer consolidation prompt. Use this to control " +
               "the format and focus of the final summary — e.g., ask the observer to " +
@@ -137,20 +139,19 @@ export const RoundtablePlugin: Plugin = async (ctx) => {
             ),
         },
 
-        async execute(args: Record<string, unknown>, toolCtx: { sessionID: string }) {
+        async execute(args: Record<string, unknown>, toolCtx: ToolContext) {
           try {
+            if (states.has(toolCtx.sessionID)) {
+              return `Cannot nest roundtables. You are already inside roundtable #${toolCtx.sessionID}. Wait for it to complete before starting another.`
+            }
+
             const rounds = (args.rounds as number) ?? 1
 
-            if (args.sessionID) {
-              if (typeof args.sessionID !== "string" || !args.sessionID.trim()) {
-                return "Error: sessionID is empty"
-              }
-              if (args.agents) {
-                return "Error: pass either sessionID (extend) or agents (new), not both"
-              }
-              args.rounds = (args.rounds as number) ?? 1
+            if (args.sessionID && typeof args.sessionID === "string" && args.sessionID.trim()) {
+              if (args.agents) return "Error: pass either sessionID or agents, not both"
               const sid = await extendRoundtable(ctx, args as unknown as RoundtableArgs, toolCtx)
               if (sid.startsWith("Error:") || sid.startsWith("Invalid")) return sid
+              toolCtx.metadata({ title: "Roundtable (extended)", metadata: { sessionId: sid } })
               const result = await new Promise<string>((resolve) => pendingResults.set(sid, { resolve }))
               return result
             }
@@ -158,26 +159,19 @@ export const RoundtablePlugin: Plugin = async (ctx) => {
             if (!args.agents || !Array.isArray(args.agents) || args.agents.length < 2) {
               return "Error: 'agents' with at least 2 names is required"
             }
+
             const validation = await validateAgents(ctx, args.agents as string[])
             if (!validation.valid) {
-              const available = validation.available.map((a) => a.name).join(", ")
-              return ["Invalid agent configuration:", ...validation.errors.map((e) => `  - ${e}`), `Available agents: ${available}`].join("\n")
+              const avail = validation.available.map((a) => a.name).join(", ")
+              return ["Invalid agent configuration:", ...validation.errors.map((e) => `  - ${e}`), `Available agents: ${avail}`].join("\n")
             }
-            if (rounds > 50) {
-              return "Error: Maximum 50 rounds allowed"
-            }
+            if (rounds > 50) return "Error: Maximum 50 rounds allowed"
 
             const sid = await startNewRoundtable(ctx, { ...args, rounds } as RoundtableArgs, toolCtx)
+            toolCtx.metadata({ title: `Roundtable: ${(args.agents as string[])?.join(" → ")}`, metadata: { sessionId: sid } })
             const result = await new Promise<string>((resolve) => pendingResults.set(sid, { resolve }))
             return result
           } catch (err) {
-            await ctx.client.app.log({
-              body: {
-                service: "roundtable",
-                level: "error",
-                message: `roundtable.execute error: ${err instanceof Error ? err.stack || err.message : String(err)}`,
-              },
-            })
             return `Error: ${err instanceof Error ? err.message : String(err)}`
           }
         },

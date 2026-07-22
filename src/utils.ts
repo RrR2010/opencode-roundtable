@@ -90,7 +90,7 @@ export function buildToolSummary(part: Part): ToolCallSummary | null {
   let outputPreview: string
   switch (state.status) {
     case "completed":
-      outputPreview = state.output!.slice(0, getConfig().toolOutputPreviewMax)
+      outputPreview = (state.output ?? "(empty)").slice(0, getConfig().toolOutputPreviewMax)
       break
     case "error":
       outputPreview = (state.output ?? "(unknown error)").slice(0, getConfig().toolOutputPreviewMax)
