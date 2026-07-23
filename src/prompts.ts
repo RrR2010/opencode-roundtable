@@ -5,7 +5,7 @@ export function buildAgentPrompt(state: RoundtableState, agent: string): string 
   const lines: string[] = []
   const orderStr = state.agents.join(" → ")
 
-  if (state.history.length === 0) {
+  if (state.currentRound === 0 && state.currentAgentIndex === 0) {
     lines.push(
       `You are participating on a multi-agent discussion — ${state.totalRounds} round(s), ` +
       `speaking order: ${orderStr}.`,

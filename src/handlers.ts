@@ -52,12 +52,6 @@ export async function startNewRoundtable(
   try {
     await saveStateFile(state)
 
-    if (getConfig().navigation === "auto") {
-      await navigateToSession(ctx, sessionID, parentSessionID)
-    }
-
-    await sendToAgent(ctx, state)
-
     await ctx.client.session.prompt({
       path: { id: parentSessionID },
       body: {
@@ -76,8 +70,17 @@ export async function startNewRoundtable(
       },
     })
 
+    if (getConfig().navigation === "auto") {
+      await navigateToSession(ctx, sessionID, parentSessionID)
+    }
+
+    await sendToAgent(ctx, state)
+
     return sessionID
   } catch (err) {
+    await ctx.client.tui.showToast({
+      body: { message: "Failed to start roundtable", variant: "error" },
+    }).catch(() => {})
     states.delete(sessionID)
     roundtableLocks.delete(sessionID)
     throw err
@@ -593,10 +596,6 @@ export async function extendRoundtable(
   try {
     await saveStateFile(newState)
 
-    if (getConfig().navigation === "auto") {
-      await navigateToSession(ctx, sessionID, originalState.parentSessionID)
-    }
-
     const agentList = originalState.agents.join(" vs ")
     await ctx.client.session.update({
       path: { id: sessionID },
@@ -614,8 +613,6 @@ export async function extendRoundtable(
       },
     })
 
-    await sendToAgent(ctx, newState)
-
     await ctx.client.tui.showToast({
       body: {
         message: `Roundtable #${sessionID} extended — ${args.rounds} more round(s) (${originalState.agents.join(" → ")})`,
@@ -623,8 +620,17 @@ export async function extendRoundtable(
       },
     })
 
+    if (getConfig().navigation === "auto") {
+      await navigateToSession(ctx, sessionID, originalState.parentSessionID)
+    }
+
+    await sendToAgent(ctx, newState)
+
     return sessionID
   } catch (err) {
+    await ctx.client.tui.showToast({
+      body: { message: "Failed to extend roundtable", variant: "error" },
+    }).catch(() => {})
     states.delete(sessionID)
     throw err
   }

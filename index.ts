@@ -152,6 +152,12 @@ export const RoundtablePlugin: Plugin = async (ctx) => {
               const sid = await extendRoundtable(ctx, args as unknown as RoundtableArgs, toolCtx)
               if (sid.startsWith("Error:") || sid.startsWith("Invalid")) return sid
               toolCtx.metadata({ title: "Roundtable (extended)", metadata: { sessionId: sid } })
+              toolCtx.abort.addEventListener("abort", () => {
+                ctx.client.session.abort({ path: { id: sid } }).catch(() => {})
+                const p = pendingResults.get(sid)
+                if (p) { p.resolve("[Roundtable cancelled — user aborted]"); pendingResults.delete(sid) }
+                roundtableLocks.delete(sid)
+              }, { once: true })
               const result = await new Promise<string>((resolve) => pendingResults.set(sid, { resolve }))
               return result
             }
@@ -169,7 +175,18 @@ export const RoundtablePlugin: Plugin = async (ctx) => {
 
             const sid = await startNewRoundtable(ctx, { ...args, rounds } as RoundtableArgs, toolCtx)
             toolCtx.metadata({ title: `Roundtable: ${(args.agents as string[])?.join(" → ")}`, metadata: { sessionId: sid } })
+            const abortHandler = () => {
+              ctx.client.session.abort({ path: { id: sid } }).catch(() => {})
+              const pending = pendingResults.get(sid)
+              if (pending) {
+                pending.resolve("[Roundtable cancelled — user aborted]")
+                pendingResults.delete(sid)
+              }
+              roundtableLocks.delete(sid)
+            }
+            toolCtx.abort.addEventListener("abort", abortHandler, { once: true })
             const result = await new Promise<string>((resolve) => pendingResults.set(sid, { resolve }))
+            toolCtx.abort.removeEventListener("abort", abortHandler)
             return result
           } catch (err) {
             return `Error: ${err instanceof Error ? err.message : String(err)}`
