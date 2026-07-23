@@ -1053,7 +1053,62 @@ None external. Only `@opencode-ai/plugin` (peer dependency of OpenCode).
 
 ---
 
-## 13. Glossary
+## 13. Future ideas
+
+### 13.1 Custom sequence mode
+
+Instead of round-robin (`agents[]` + `rounds`), accept an explicit turn sequence:
+
+```ts
+sequence: [
+  { agent: "pm",  prompt: "Planeje xyz" },
+  { agent: "dev", prompt: "Implemente xyz" },
+  { agent: "rv",  prompt: "Revise xyz" },
+  { agent: "dev", prompt: "Corrija as saídas do rv anteriores" },
+  { agent: "pm",  prompt: "Commit and push" },
+],
+observerPrompt: "Gere um relatório.md..."
+```
+
+Breaks the current assumptions of `currentRound` / `currentAgentIndex` as a linear
+grid — would need a step-based index and per-step prompt injection via
+`buildAgentPrompt`. Observer triggers after the last step. The round-robin
+`mode: "roundrobin"` and the new `mode: "sequence"` could coexist as
+alternatives in the same tool.
+
+### 13.2 Configurable context sharing
+
+Control how much of the accumulated discussion each agent sees:
+
+| Level | Description |
+|-------|-------------|
+| `full` | Everything — tools + responses + thinking (current behavior) |
+| `toolAndResponse` | Tool outputs + agent responses, no system/thinking |
+| `responseOnly` | Only agent text responses |
+| `toolOnly` | Only tool call summaries |
+| `nothing` | No prior history besides the turn prompt |
+
+Since the plugin does not control the session's message store, this would need
+either (a) selective history reconstruction injected into the agent prompt, or
+(b) session API support for message filtering.
+
+### 13.3 UI progress in TUI
+
+Show a step indicator in the session title or via TUI components:
+
+```
+[pm → dev → rv → dev → pm]
+         ↑ passo atual
+```
+
+### 13.4 Callbacks / webhooks
+
+Trigger a configured action when the roundtable concludes (e.g. write
+`relatorio.md`, call an HTTP endpoint, post to Slack).
+
+---
+
+## 14. Glossary
 
 | Term | Definition |
 |------|------------|
