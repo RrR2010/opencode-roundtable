@@ -7,7 +7,7 @@ export function buildAgentPrompt(state: RoundtableState, agent: string): string 
 
   if (state.history.length === 0) {
     lines.push(
-      `Multi-agent discussion — ${state.totalRounds} round(s), ` +
+      `You are participating on a multi-agent discussion — ${state.totalRounds} round(s), ` +
       `speaking order: ${orderStr}.`,
       ``,
       `Topic: ${state.prompt}`,

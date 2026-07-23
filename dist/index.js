@@ -354,7 +354,7 @@ function buildAgentPrompt(state, agent) {
   const lines = [];
   const orderStr = state.agents.join(" → ");
   if (state.history.length === 0) {
-    lines.push(`Multi-agent discussion — ${state.totalRounds} round(s), ` + `speaking order: ${orderStr}.`, ``, `Topic: ${state.prompt}`, ``);
+    lines.push(`You are participating on a multi-agent discussion — ${state.totalRounds} round(s), ` + `speaking order: ${orderStr}.`, ``, `Topic: ${state.prompt}`, ``);
   }
   lines.push(`--- Round ${state.currentRound + 1} of ${state.totalRounds} — ${agent}'s turn ---`);
   const isLastAgent = state.currentAgentIndex === state.agents.length - 1;
@@ -1019,5 +1019,5 @@ export {
   RoundtablePlugin
 };
 
-//# debugId=78271419B44F611C64756E2164756E21
+//# debugId=728F521588949B0364756E2164756E21
 //# sourceMappingURL=index.js.map

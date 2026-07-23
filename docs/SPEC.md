@@ -412,7 +412,7 @@ Each time the plugin passes the turn (via `buildAgentPrompt`), it sends a
 fluent message with:
 
 ```
-Multi-agent discussion — N round(s), speaking order: A → B → C.
+You are participating on a multi-agent discussion — N round(s), speaking order: A → B → C.
 
 Topic: {prompt}
 
@@ -909,7 +909,7 @@ S1 (orchestrator):
   [tool returns observer summary]
   
 S2 (roundtable session):
-  Multi-agent discussion — 2 round(s), speaking order: planner → developer.
+  You are participating on a multi-agent discussion — 2 round(s), speaking order: planner → developer.
 
   Topic: What architecture should we use?
 
