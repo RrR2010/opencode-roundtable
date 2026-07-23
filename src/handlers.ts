@@ -401,10 +401,21 @@ export async function handleAgentError(
         : String(event.properties.error)
       : "Unknown error"
 
+  const isUserCancel = state.userInitiatedAbort ||
+    errorMsg.toLowerCase().includes("abort") ||
+    errorMsg.toLowerCase().includes("cancel")
+
   state.errors.push(`Agent "${agent}" failed on round ${state.currentRound + 1}: ${errorMsg}`)
 
   const handle = timeoutHandles.get(state.sessionID)
   if (handle) { clearTimeout(handle); timeoutHandles.delete(state.sessionID) }
+
+  if (isUserCancel) {
+    state.phase = "aborted"
+    await saveStateFile(state)
+    await finalizeRoundtable(ctx, state)
+    return
+  }
 
   await ctx.client.tui.showToast({
     body: {

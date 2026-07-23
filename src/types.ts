@@ -28,6 +28,7 @@ export interface RoundtableState {
   lastProcessedMsgId?: string
   currentGeneration: number
   observerPrompt?: string
+  userInitiatedAbort?: boolean
 }
 
 export interface HistoryEntry {

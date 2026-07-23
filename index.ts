@@ -176,6 +176,8 @@ export const RoundtablePlugin: Plugin = async (ctx) => {
             const sid = await startNewRoundtable(ctx, { ...args, rounds } as RoundtableArgs, toolCtx)
             toolCtx.metadata({ title: `Roundtable: ${(args.agents as string[])?.join(" → ")}`, metadata: { sessionId: sid } })
             const abortHandler = () => {
+              const s = states.get(sid)
+              if (s) s.userInitiatedAbort = true
               ctx.client.session.abort({ path: { id: sid } }).catch(() => {})
               const pending = pendingResults.get(sid)
               if (pending) {
