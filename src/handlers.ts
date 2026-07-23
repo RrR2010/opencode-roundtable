@@ -277,6 +277,14 @@ export async function processNextTurn(
 ): Promise<void> {
   if (state.phase === "done" || state.phase === "aborted") return
 
+  // If user-initiated abort was flagged (toolCtx.abort from S1), skip processing
+  if (state.userInitiatedAbort) {
+    state.phase = "aborted"
+    await saveStateFile(state)
+    await finalizeRoundtable(ctx, state)
+    return
+  }
+
   const result = await ctx.client.session.messages({ path: { id: state.sessionID } })
   const messages = result.data
 

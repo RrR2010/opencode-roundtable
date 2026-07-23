@@ -41,7 +41,24 @@ export const RoundtablePlugin: Plugin = async (ctx) => {
         case "session.idle": {
           const handle = timeoutHandles.get(sessionID)
           if (handle) { clearTimeout(handle); timeoutHandles.delete(sessionID) }
+          ctx.client.app.log({
+            body: {
+              service: "roundtable", level: "debug",
+              message: "session.idle event",
+              extra: { sessionID, eventProps: JSON.stringify(event.properties) },
+            },
+          }).catch(() => {})
           await processNextTurn(ctx, state)
+          break
+        }
+        case "session.status": {
+          ctx.client.app.log({
+            body: {
+              service: "roundtable", level: "debug",
+              message: "session.status event",
+              extra: { sessionID, eventProps: JSON.stringify(event.properties) },
+            },
+          }).catch(() => {})
           break
         }
         case "session.error": {
