@@ -524,6 +524,7 @@ if similarity > threshold (default 0.85):
 ### 7.6 Agent timeout
 
 - Each agent turn has a configurable timeout (default **5 minutes**)
+- Set `defaultTimeoutMs: -1` for no timeout (agent can run indefinitely)
 - Implemented via `setTimeout` + generation counter (stale check)
 - If it expires: `session.abort({path:{id:S2}})` → skip to next agent
 - Timeout handle is tracked in `timeoutHandles` map

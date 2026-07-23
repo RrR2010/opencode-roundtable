@@ -10,9 +10,13 @@
     },
     "defaultTimeoutMs": {
       "type": "integer",
-      "description": "Per-agent timeout in milliseconds",
+      "description": "Per-agent timeout in milliseconds. Use -1 for no timeout.",
       "default": 300000,
-      "minimum": 30000
+      "minimum": -1,
+      "oneOf": [
+        { "const": -1, "description": "No timeout" },
+        { "type": "integer", "minimum": 30000 }
+      ]
     },
     "loopSimilarityThreshold": {
       "type": "number",

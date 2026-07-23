@@ -42,7 +42,7 @@ export function getConfig(): PluginConfig {
 function validateConfig(raw: Record<string, unknown>): PluginConfig {
   return {
     defaultTimeoutMs:
-      typeof raw.defaultTimeoutMs === "number" && raw.defaultTimeoutMs >= 30_000
+      typeof raw.defaultTimeoutMs === "number" && (raw.defaultTimeoutMs === -1 || raw.defaultTimeoutMs >= 30_000)
         ? raw.defaultTimeoutMs
         : DEFAULT_CONFIG.defaultTimeoutMs,
     loopSimilarityThreshold:

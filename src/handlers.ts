@@ -102,17 +102,20 @@ export async function sendToAgent(
     state.currentGeneration++
     const capturedGeneration = state.currentGeneration
 
-    const handle = setTimeout(async () => {
-      timeoutHandles.delete(state.sessionID)
-      if (state.currentGeneration !== capturedGeneration) return
+    const timeoutMs = getConfig().defaultTimeoutMs
+    if (timeoutMs > 0) {
+      const handle = setTimeout(async () => {
+        timeoutHandles.delete(state.sessionID)
+        if (state.currentGeneration !== capturedGeneration) return
 
-      try {
-        await ctx.client.session.abort({ path: { id: state.sessionID } })
-        state.errors.push(`Agent "${agent}" timed out after ${getConfig().defaultTimeoutMs / 1000}s`)
-      } catch { /* session may already be done */ }
-    }, getConfig().defaultTimeoutMs)
+        try {
+          await ctx.client.session.abort({ path: { id: state.sessionID } })
+          state.errors.push(`Agent "${agent}" timed out after ${timeoutMs / 1000}s`)
+        } catch { /* session may already be done */ }
+      }, timeoutMs)
 
-    timeoutHandles.set(state.sessionID, handle)
+      timeoutHandles.set(state.sessionID, handle)
+    }
     await updateSessionTitle(ctx, state)
 
     await ctx.client.app.log({

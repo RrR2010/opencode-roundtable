@@ -37,7 +37,7 @@ function getConfig() {
 }
 function validateConfig(raw) {
   return {
-    defaultTimeoutMs: typeof raw.defaultTimeoutMs === "number" && raw.defaultTimeoutMs >= 30000 ? raw.defaultTimeoutMs : DEFAULT_CONFIG.defaultTimeoutMs,
+    defaultTimeoutMs: typeof raw.defaultTimeoutMs === "number" && (raw.defaultTimeoutMs === -1 || raw.defaultTimeoutMs >= 30000) ? raw.defaultTimeoutMs : DEFAULT_CONFIG.defaultTimeoutMs,
     loopSimilarityThreshold: typeof raw.loopSimilarityThreshold === "number" && raw.loopSimilarityThreshold >= 0 && raw.loopSimilarityThreshold <= 1 ? raw.loopSimilarityThreshold : DEFAULT_CONFIG.loopSimilarityThreshold,
     toolOutputPreviewMax: typeof raw.toolOutputPreviewMax === "number" && raw.toolOutputPreviewMax >= 100 ? raw.toolOutputPreviewMax : DEFAULT_CONFIG.toolOutputPreviewMax,
     defaultObserverPrompt: typeof raw.defaultObserverPrompt === "string" && raw.defaultObserverPrompt.length > 0 ? raw.defaultObserverPrompt : DEFAULT_CONFIG.defaultObserverPrompt,
@@ -443,16 +443,19 @@ async function sendToAgent(ctx, state) {
     });
     state.currentGeneration++;
     const capturedGeneration = state.currentGeneration;
-    const handle = setTimeout(async () => {
-      timeoutHandles.delete(state.sessionID);
-      if (state.currentGeneration !== capturedGeneration)
-        return;
-      try {
-        await ctx.client.session.abort({ path: { id: state.sessionID } });
-        state.errors.push(`Agent "${agent}" timed out after ${getConfig().defaultTimeoutMs / 1000}s`);
-      } catch {}
-    }, getConfig().defaultTimeoutMs);
-    timeoutHandles.set(state.sessionID, handle);
+    const timeoutMs = getConfig().defaultTimeoutMs;
+    if (timeoutMs > 0) {
+      const handle = setTimeout(async () => {
+        timeoutHandles.delete(state.sessionID);
+        if (state.currentGeneration !== capturedGeneration)
+          return;
+        try {
+          await ctx.client.session.abort({ path: { id: state.sessionID } });
+          state.errors.push(`Agent "${agent}" timed out after ${timeoutMs / 1000}s`);
+        } catch {}
+      }, timeoutMs);
+      timeoutHandles.set(state.sessionID, handle);
+    }
     await updateSessionTitle(ctx, state);
     await ctx.client.app.log({
       body: {
@@ -1019,5 +1022,5 @@ export {
   RoundtablePlugin
 };
 
-//# debugId=728F521588949B0364756E2164756E21
+//# debugId=CDFC3F178E3F333564756E2164756E21
 //# sourceMappingURL=index.js.map
